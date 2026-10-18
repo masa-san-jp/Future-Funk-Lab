@@ -1,0 +1,11 @@
+node_modules/
+dist/
+playwright-report/
+test-results/
+.DS_Store
+release/
+site/
+.env*
+.agents/
+.codex/
+.aws/

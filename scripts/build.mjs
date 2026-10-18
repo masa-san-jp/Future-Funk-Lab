@@ -1,0 +1,13 @@
+import { build } from 'esbuild';
+import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
+const worker=await build({entryPoints:['src/worker.js'],bundle:true,write:false,format:'iife',target:'es2022',legalComments:'inline'});
+const app=await build({entryPoints:['src/app.js'],bundle:true,write:false,outfile:'app.js',format:'iife',target:'es2022',legalComments:'inline',define:{WORKER_SOURCE:JSON.stringify(worker.outputFiles[0].text)}});
+const {version}=JSON.parse(await readFile('package.json','utf8'));
+let html=(await readFile('index.html','utf8')).replace('/* APP_VERSION */',()=>version);
+const js=app.outputFiles.find(f=>f.path.endsWith('.js')).text.replace(/<\/script/gi,'<\\/script');
+const css=app.outputFiles.find(f=>f.path.endsWith('.css')).text;
+html=html.replace('/* APP_CSS */',()=>css).replace('/* APP_JS */',()=>js);
+await mkdir('dist/licenses',{recursive:true});await writeFile('dist/index.html',html);
+await copyFile('THIRD_PARTY_NOTICES.md','dist/THIRD_PARTY_NOTICES.md');
+await copyFile('node_modules/soundtouchjs/LICENSE','dist/licenses/soundtouchjs.txt');await copyFile('node_modules/@breezystack/lamejs/LICENSE','dist/licenses/lamejs.txt');
+console.log(`Built dist/index.html (${Math.round(Buffer.byteLength(html)/1024)} KiB), with embedded DSP worker and dependencies.`);

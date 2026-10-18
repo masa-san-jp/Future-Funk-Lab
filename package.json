@@ -1,0 +1,23 @@
+{
+  "name": "future-funk-lab",
+  "version": "0.1.0-rc.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/serve.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "playwright test",
+    "release": "npm run build && npm run check && node scripts/release.mjs",
+    "check": "npm test && npm run test:browser",
+    "site": "node scripts/site-bundle.mjs"
+  },
+  "dependencies": {
+    "soundtouchjs": "0.3.0",
+    "@breezystack/lamejs": "1.2.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "@playwright/test": "1.56.1"
+  }
+}
