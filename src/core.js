@@ -1,6 +1,23 @@
 export const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
-export const stepSeconds = bpm => 30 / bpm;
-export const patternSeconds = (bpm, steps) => stepSeconds(bpm) * steps;
+// Steps are stored as sixteenth-note ticks; the grid only sets which ticks are editable.
+export const TICKS = 64, RESOLUTIONS = [8, 16], PATTERN_TICKS = [8, 16, 32, 64];
+export const tickSeconds = bpm => 15 / bpm;
+export const ticksPerStep = resolution => 16 / resolution;
+export const gridSeconds = (bpm, resolution = 8) => tickSeconds(bpm) * ticksPerStep(resolution);
+export const patternSeconds = (bpm, lengthTicks) => tickSeconds(bpm) * lengthTicks;
+export const displaySteps = (lengthTicks, resolution) => lengthTicks / ticksPerStep(resolution);
+// Trigger frames shared by playback and export. Swing delays every odd step of
+// the current grid: the off-beat of a two-step pair sits at swing% of the pair.
+export function triggerFrames(track,{lengthTicks,resolution=8,swing=50},period){
+  const unit=ticksPerStep(resolution),frames=[];
+  for(let t=0;t<lengthTicks;t+=unit)if(track.steps[t]){
+    const offbeat=(t/unit)%2===1,position=offbeat?t-unit+2*unit*swing/100:t;
+    frames.push(Math.round(position*period/lengthTicks));
+  }
+  return frames;
+}
+// Odd ticks cannot be shown on an eighth-note grid; count them before switching.
+export const offbeatTicks = tracks => tracks.reduce((n,t)=>n+t.steps.filter((on,i)=>on&&i%2).length,0);
 export function sourceBpmFromLoop(originalDuration,range,quarterBeats){
   const length=originalDuration*(range[1]-range[0]);
   if(!(length>0)||!Number.isFinite(quarterBeats)||quarterBeats<=0)throw Error('範囲と拍数を指定してください');
@@ -13,15 +30,16 @@ export const sliderDb = value => Number(value) <= -60 ? -Infinity : Number(value
 export const formatDb = value => value === -Infinity ? '−∞' : `${value > 0 ? '+' : ''}${Number(value).toFixed(1)}`;
 export const formatTime = n => `${Math.floor(Math.max(0,n) / 60)}:${(Math.max(0,n)%60).toFixed(3).padStart(6,'0')}`;
 export function makeTrack(index) {
-  return { index, steps:Array(32).fill(false), pitch:0, cents:0, eq:[0,0,0], volume:0, mute:false, solo:false, mode:'overlap', previewLoop:false, sync:'auto', syncSteps:4 };
+  return { index, steps:Array(TICKS).fill(false), pitch:0, cents:0, eq:[0,0,0], volume:0, mute:false, solo:false, mode:'overlap', previewLoop:false, sync:'auto', syncSteps:4 };
 }
 // A clip spans a musical interval, not necessarily one sequencer step.
 // Repeated notes establish that track's shortest interval. A single note uses
 // the next occupied position across the arrangement, including the bar line.
-export function trackSpanSteps(tracks,index,count,steps){
+// Spans are in ticks and ignore swing; syncSteps stays in eighth notes.
+export function trackSpanTicks(tracks,index,count,steps){
   const track=tracks[index];
   if(!track||index>=count||track.sync==='original')return null;
-  if(track.sync==='fixed')return track.syncSteps;
+  if(track.sync==='fixed')return track.syncSteps*2;
   const own=[];for(let s=0;s<steps;s++)if(track.steps[s])own.push(s);
   if(!own.length)return null;
   if(own.length>1)return Math.min(...own.map((s,i)=>(own[(i+1)%own.length]-s+steps)%steps||steps));
@@ -29,8 +47,8 @@ export function trackSpanSteps(tracks,index,count,steps){
   for(let i=0;i<count;i++)for(let s=0;s<steps;s++)if(tracks[i]?.steps[s])distance=Math.min(distance,(s-own[0]+steps)%steps||steps);
   return distance;
 }
-export function syncedFrames(bpm,steps,span,rate){
-  return span==null?null:Math.max(1,Math.round(Math.round(patternSeconds(bpm,steps)*rate)*span/steps));
+export function syncedFrames(bpm,lengthTicks,span,rate){
+  return span==null?null:Math.max(1,Math.round(Math.round(patternSeconds(bpm,lengthTicks)*rate)*span/lengthTicks));
 }
 export function boundaries(start, end, count) {
   return Array.from({length:count+1}, (_,i)=> start+(end-start)*i/count);

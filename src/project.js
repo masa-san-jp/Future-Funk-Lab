@@ -1,5 +1,5 @@
-import { clamp, encodeWav, decodeWav, makeTrack } from './core.js';
-export const PROJECT_FORMAT='future-funk-lab-project', PROJECT_SCHEMA=1, PROJECT_EXTENSION='.fflab';
+import { clamp, encodeWav, decodeWav, makeTrack, TICKS, PATTERN_TICKS, RESOLUTIONS } from './core.js';
+export const PROJECT_FORMAT='future-funk-lab-project', PROJECT_SCHEMA=2, PROJECT_EXTENSION='.fflab';
 const MAGIC='FFLABPRJ', CONTAINER_VERSION=1, HEADER=16, RATE=44100, MAX_SECONDS=600;
 const fail=message=>{throw Error(message);};
 const dbOut=value=>value===-Infinity?null:value;
@@ -18,9 +18,9 @@ export function serializeProject(s,savedAt=null){
     source:{name:s.sourceName,sampleRate:s.rate,frames:s.frames,bpm:s.sourceBpm,bpmNote:s.bpmNote},
     tempo:{bpm:s.bpm,followsSource:s.followsSource},
     sampling:{range:[...s.range],committed:s.committed?[...s.committed]:null,points:s.committed?[...s.points]:[],count:s.count,snap:s.snap,sourceLoop:s.sourceLoop,loopBeats:s.loopBeats},
-    sequence:{steps:s.steps,loop:s.loop},
+    sequence:{lengthTicks:s.lengthTicks,resolution:s.resolution,swing:s.swing,loop:s.loop},
     eq:{low:s.settings.low,high:s.settings.high,slope:s.settings.slope},
-    tracks:s.tracks.map(t=>({pitch:t.pitch,cents:t.cents,eq:t.eq.map(dbOut),volume:dbOut(t.volume),mute:t.mute,solo:t.solo,mode:t.mode,previewLoop:t.previewLoop,sync:t.sync,syncSteps:t.syncSteps,steps:t.steps.slice(0,32)})),
+    tracks:s.tracks.map(t=>({pitch:t.pitch,cents:t.cents,eq:t.eq.map(dbOut),volume:dbOut(t.volume),mute:t.mute,solo:t.solo,mode:t.mode,previewLoop:t.previewLoop,sync:t.sync,syncSteps:t.syncSteps,steps:t.steps.slice(0,TICKS)})),
     parts:s.parts.map(p=>({hp:{...p.hp},lp:{...p.lp}})),
     master:{db:dbOut(s.masterDb)},
     export:{channels:s.exportChannels,format:s.exportFormat}
@@ -28,11 +28,20 @@ export function serializeProject(s,savedAt=null){
   if(savedAt==null)delete json.savedAt;
   return json;
 }
+// v1 stored eighth-note steps; v2 stores sixteenth-note ticks with a grid and swing.
+export function migrateProject(json){
+  if(json.schemaVersion!==1)return json;
+  const steps=[4,8,16,32].includes(json.sequence?.steps)?json.sequence.steps:16;
+  return {...json,schemaVersion:2,
+    sequence:{lengthTicks:steps*2,resolution:8,swing:50,loop:json.sequence?.loop},
+    tracks:Array.isArray(json.tracks)?json.tracks.map(t=>t&&typeof t==='object'?{...t,steps:Array.from({length:TICKS},(_,i)=>i%2===0&&Array.isArray(t.steps)&&t.steps[i/2]===true)}:t):json.tracks};
+}
 // Normalizes every value to the ranges the UI accepts. Throws before any state changes.
-export function parseProject(json){
-  if(!json||typeof json!=='object'||json.format!==PROJECT_FORMAT)fail('Future Funk Labのプロジェクトではありません');
-  if(!Number.isInteger(json.schemaVersion)||json.schemaVersion<1)fail('プロジェクトの版が不正です');
-  if(json.schemaVersion>PROJECT_SCHEMA)fail('新しい版のアプリで保存されたプロジェクトです。アプリを更新してください');
+export function parseProject(input){
+  if(!input||typeof input!=='object'||input.format!==PROJECT_FORMAT)fail('Future Funk Labのプロジェクトではありません');
+  if(!Number.isInteger(input.schemaVersion)||input.schemaVersion<1)fail('プロジェクトの版が不正です');
+  if(input.schemaVersion>PROJECT_SCHEMA)fail('新しい版のアプリで保存されたプロジェクトです。アプリを更新してください');
+  const json=migrateProject(input);
   const {source={},tempo={},sampling={},sequence={},eq={},master={}}=json;
   if(source.sampleRate!==RATE)fail('44.1 kHz以外のプロジェクトには対応していません');
   const frames=number(source.frames,'音源の長さ');
@@ -52,8 +61,11 @@ export function parseProject(json){
   const tracks=json.tracks.map((t,i)=>{
     if(!t||typeof t!=='object')fail(`トラック${i+1}の設定が不正です`);
     const eqValues=Array.isArray(t.eq)&&t.eq.length===3?t.eq:fail(`トラック${i+1}のEQが不正です`);
-    return {...makeTrack(i),pitch:Math.round(bounded(t.pitch,-12,12,'ピッチ')),cents:Math.round(bounded(t.cents,-50,50,'セント')),eq:eqValues.map(v=>dbIn(v,0,'EQ')),volume:dbIn(t.volume,6,'出力'),mute:t.mute===true,solo:t.solo===true,mode:oneOf(t.mode,['overlap','cut'],'overlap'),previewLoop:t.previewLoop===true,sync:oneOf(t.sync,['auto','fixed','original'],'auto'),syncSteps:bounded(t.syncSteps,.25,128,'同期ステップ数'),steps:bools(t.steps,32)};
+    return {...makeTrack(i),pitch:Math.round(bounded(t.pitch,-12,12,'ピッチ')),cents:Math.round(bounded(t.cents,-50,50,'セント')),eq:eqValues.map(v=>dbIn(v,0,'EQ')),volume:dbIn(t.volume,6,'出力'),mute:t.mute===true,solo:t.solo===true,mode:oneOf(t.mode,['overlap','cut'],'overlap'),previewLoop:t.previewLoop===true,sync:oneOf(t.sync,['auto','fixed','original'],'auto'),syncSteps:bounded(t.syncSteps,.25,128,'同期ステップ数'),steps:bools(t.steps,TICKS)};
   });
+  const resolution=oneOf(sequence.resolution,RESOLUTIONS,8);
+  // An eighth-note grid cannot show odd ticks; drop them as the UI would.
+  if(resolution===8)tracks.forEach(t=>t.steps.forEach((_,i)=>{if(i%2)t.steps[i]=false;}));
   const filter=(f,min,max,fallback)=>({on:f?.on===true,freq:f?.freq==null?fallback:bounded(f.freq,min,max,'フィルター周波数'),slope:oneOf(f?.slope,[6,12,24],12)});
   const parts=json.parts.map((p,i)=>({hp:filter(p?.hp,50,2000,200),lp:filter(p?.lp,200,8000,i?250:2000)}));
   return {
@@ -63,7 +75,7 @@ export function parseProject(json){
     bpm:bounded(tempo.bpm,30,300,'グローバルBPM'),followsSource:tempo.followsSource!==false,
     range,committed,points,count,snap:sampling.snap===true,sourceLoop:sampling.sourceLoop===true,
     loopBeats:sampling.loopBeats==null?null:bounded(sampling.loopBeats,.5,4096,'拍数'),
-    steps:oneOf(sequence.steps,[4,8,16,32],16),loop:sequence.loop!==false,
+    lengthTicks:oneOf(sequence.lengthTicks,PATTERN_TICKS,32),resolution,swing:Math.round(bounded(sequence.swing??50,50,75,'スウィング')),loop:sequence.loop!==false,
     settings:{low:bounded(eq.low??300,200,500,'EQ'),high:bounded(eq.high??3000,2000,4000,'EQ'),slope:oneOf(eq.slope,[6,12,24],12)},
     tracks,parts,masterDb:master.db===undefined?0:dbIn(master.db,6,'マスター'),
     exportChannels:oneOf(json.export?.channels,[1,2],2),exportFormat:oneOf(json.export?.format,['wav','mp3'],'wav')

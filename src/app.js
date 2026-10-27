@@ -1,11 +1,13 @@
 import './style.css';
-import { clamp, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, stepSeconds, trackSpanSteps, syncedFrames } from './core.js';
+import { clamp, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, gridSeconds, trackSpanTicks, syncedFrames, displaySteps, ticksPerStep, offbeatTicks, PATTERN_TICKS } from './core.js';
 import { AudioEngine, audioBuffer, makePartGraph, renderPattern, renderPart } from './audio.js';
 import { Waveform } from './waveform.js';
 import { serializeProject, readProject, readProjectFile, packContainer, encodeSource, projectFileName } from './project.js';
 import { autosave } from './autosave.js';
 const $=id=>document.getElementById(id);
-const state={bpm:120,sourceBpm:120,rate:44100,original:null,channels:null,range:[0,1],committed:null,points:[],count:4,steps:16,snap:false,loop:true,sourceLoop:false,tracks:Array.from({length:8},(_,i)=>makeTrack(i)),settings:{low:300,high:3000,slope:12},buffers:[],parts:[{name:'ボーカル',key:'vocal',hp:{on:true,freq:200,slope:12},lp:{on:false,freq:2000,slope:12}},{name:'ベース',key:'bass',hp:{on:false,freq:200,slope:12},lp:{on:true,freq:250,slope:12}}],partGraphs:[],busy:false,generation:0,recorded:null,recording:false,sourceName:''};
+const steps=()=>displaySteps(state.lengthTicks,state.resolution);
+const timing=()=>({bpm:state.bpm,lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing});
+const state={bpm:120,sourceBpm:120,rate:44100,original:null,channels:null,range:[0,1],committed:null,points:[],count:4,lengthTicks:32,resolution:8,swing:50,snap:false,loop:true,sourceLoop:false,tracks:Array.from({length:8},(_,i)=>makeTrack(i)),settings:{low:300,high:3000,slope:12},buffers:[],parts:[{name:'ボーカル',key:'vocal',hp:{on:true,freq:200,slope:12},lp:{on:false,freq:2000,slope:12}},{name:'ベース',key:'bass',hp:{on:false,freq:200,slope:12},lp:{on:true,freq:250,slope:12}}],partGraphs:[],busy:false,generation:0,recorded:null,recording:false,sourceName:''};
 let sourcePlayhead=0,sourceAudioBuffer=null,sourceSeekVersion=0,tempoFollowsSource=true,endpointMenuTime=0,padPlaybackVersion=0,loopBeatsOverride=null;
 let workerCounter=0,workerJobs=new Map();
 const workerUrl=URL.createObjectURL(new Blob([WORKER_SOURCE],{type:'text/javascript'}));
@@ -100,12 +102,12 @@ async function rebuildSource(){
 }
 const pitchTimers=Array(8),pitchVersions=Array(8).fill(0);
 function trackBuildKey(index){
-  const t=state.tracks[index];return [state.generation,state.points[index],state.points[index+1],state.bpm,state.steps,trackSpanSteps(state.tracks,index,state.count,state.steps),t.pitch,t.cents].join(':');
+  const t=state.tracks[index];return [state.generation,state.points[index],state.points[index+1],state.bpm,state.lengthTicks,trackSpanTicks(state.tracks,index,state.count,state.lengthTicks),t.pitch,t.cents].join(':');
 }
 async function trackBuffer(index){
   const key=trackBuildKey(index),a=state.points[index]*duration(),b=state.points[index+1]*duration();
   const channels=sliceChannels(state.channels,a,b,state.rate),track={...state.tracks[index]};
-  const span=trackSpanSteps(state.tracks,index,state.count,state.steps),target=syncedFrames(state.bpm,state.steps,span,state.rate);
+  const span=trackSpanTicks(state.tracks,index,state.count,state.lengthTicks),target=syncedFrames(state.bpm,state.lengthTicks,span,state.rate);
   const tempo=target?channels[0].length/target:1,pitch=track.pitch+track.cents/100;
   const preview=await job('transform',channels,{tempo,pitch:0});
   const shifted=pitch?await job('transform',channels,{tempo,pitch}):preview.map(c=>c.slice());
@@ -122,10 +124,10 @@ function applyTrackBuffer(index,buffer){
 function updateTrackTiming(index){
   const buffer=state.buffers[index];if(!buffer)return;
   const original=(state.points[index+1]-state.points[index])*duration(),span=buffer.syncSpan;
-  const text=span==null?`原寸 ${buffer.duration.toFixed(3)} s`:`${span}ステップ / ${buffer.duration.toFixed(3)} s（元 ${original.toFixed(3)} s）`;
+  const text=span==null?`原寸 ${buffer.duration.toFixed(3)} s`:`${span/ticksPerStep(state.resolution)}ステップ / ${buffer.duration.toFixed(3)} s（元 ${original.toFixed(3)} s）`;
   const label=document.querySelector(`[data-track-length="${index}"]`);if(label)label.textContent=buffer.duration.toFixed(3)+' s';
   const timing=document.querySelector(`[data-sync-length="${index}"]`);if(timing)timing.textContent=text;
-  const pad=document.querySelector(`[data-pad-length="${index}"]`);if(pad)pad.textContent=span==null?`${original.toFixed(3)} s`:`${buffer.duration.toFixed(3)} s · ${span}ステップ`;
+  const pad=document.querySelector(`[data-pad-length="${index}"]`);if(pad)pad.textContent=span==null?`${original.toFixed(3)} s`:`${buffer.duration.toFixed(3)} s · ${span/ticksPerStep(state.resolution)}ステップ`;
 }
 function queueSync(){
   for(let i=0;i<state.count;i++)if(state.buffers[i]?.buildKey!==trackBuildKey(i))queuePitch(i,false);
@@ -141,12 +143,12 @@ async function rebuildChops({preservePad=false}={}){
 }
 function quantizeChops(){
   if(!state.committed||!state.snap)return;
-  const points=quantizeBoundaries(state.points.map(t=>t*duration()),stepSeconds(state.bpm),Math.max(.001,1/state.rate));
+  const points=quantizeBoundaries(state.points.map(t=>t*duration()),gridSeconds(state.bpm,state.resolution),Math.max(.001,1/state.rate));
   state.points=points.map(t=>t/duration());
 }
 function drawChops(){
   if(!state.committed)return;const [a,b]=state.committed.map(t=>t*duration());
-  const channels=sliceChannels(state.channels,a,b,state.rate);chopWave.gridSeconds=stepSeconds(state.bpm);chopWave.set(channels,state.rate,null,state.points.map(t=>t*duration()-a));
+  const channels=sliceChannels(state.channels,a,b,state.rate);chopWave.gridSeconds=gridSeconds(state.bpm,state.resolution);chopWave.set(channels,state.rate,null,state.points.map(t=>t*duration()-a));
   $('chop-info').textContent=`${state.count}区間 → トラック1〜${state.count} · ${(b-a).toFixed(3)} s`;
   $('chop-pads').innerHTML=Array.from({length:state.count},(_,i)=>`<button class="chop-pad" data-pad="${i}" data-preview="pad-${i}" aria-pressed="false"><strong>${i+1}</strong><small data-pad-length="${i}">${((state.points[i+1]-state.points[i])*duration()).toFixed(3)} s</small><span>↻ ループ試聴</span></button>`).join('');
   document.querySelectorAll('[data-pad]').forEach(b=>{b.addEventListener('click',guarded(()=>playPad(Number(b.dataset.pad))));const active=engine.preview.has(`pad-${b.dataset.pad}`);b.classList.toggle('active',active);b.setAttribute('aria-pressed',active);});
@@ -156,7 +158,7 @@ let boundaryTimer;
 async function flushBoundary(){if(!boundaryTimer)return;clearTimeout(boundaryTimer);boundaryTimer=null;await rebuildChops({preservePad:true});}
 function moveBoundary(index,value,options={}){
   if(!state.committed||state.busy)return;
-  const start=state.committed[0]*duration(),points=state.points.map(t=>t*duration()-start),grid=state.snap?stepSeconds(state.bpm):0;
+  const start=state.committed[0]*duration(),points=state.points.map(t=>t*duration()-start),grid=state.snap?gridSeconds(state.bpm,state.resolution):0;
   // Keyboard requests below 11ms advance to the adjacent grid point while snapped.
   if(grid&&options.keyboard)value=points[index]+options.direction*grid;
   const next=snapBoundary(value,index,points,grid,0,Math.max(1/state.rate,.001));state.points[index]=(next+start)/duration();
@@ -237,8 +239,8 @@ async function exportPart(index){
   try{const channels=await renderPart(state.mid,state.rate,state.parts[index]);await saveAudio(channels,$(`part-format-${index}`).value,`future-funk-${state.parts[index].key}-${state.bpm}bpm`);status(`${state.parts[index].name}を書き出しました`);}finally{busy(false);}
 }
 function renderTracks(){
-  $('tracks').innerHTML=state.tracks.map((track,i)=>`<div class="track-row ${!state.committed||i>=state.count?'empty':''}" data-track="${i}"><div><div class="track-label"><strong>TRACK ${String(i+1).padStart(2,'0')}</strong><span data-track-length="${i}">${state.buffers[i]?state.buffers[i].duration.toFixed(3)+' s':'EMPTY'}</span></div><canvas id="track-wave-${i}" aria-label="トラック${i+1}の波形"></canvas></div><div><div class="edit-line"><button data-track-play="${i}" data-preview="track-${i}" aria-pressed="false" aria-label="トラック${i+1}試聴">▶</button><button data-track-stop="${i}" aria-label="トラック${i+1}試聴停止">■</button><button data-track-loop="${i}" aria-pressed="${track.previewLoop}" aria-label="トラック${i+1}試聴ループ">↻</button><button data-track-mute="${i}" aria-pressed="${track.mute}" aria-label="トラック${i+1}ミュート">M</button><button data-track-solo="${i}" aria-pressed="${track.solo}" aria-label="トラック${i+1}ソロ">S</button><select data-track-mode="${i}" aria-label="トラック${i+1}発音方式"><option value="overlap" ${track.mode==='overlap'?'selected':''}>重ねる</option><option value="cut" ${track.mode==='cut'?'selected':''}>切る</option></select><label>PITCH <input type="number" data-track-pitch="${i}" min="-12" max="12" step="1" value="${track.pitch}"></label><label>¢ <input type="number" data-track-cents="${i}" min="-50" max="50" step="1" value="${track.cents}"></label></div><div class="edit-line sync-controls"><label>長さ <select data-track-sync="${i}" aria-label="トラック${i+1}の長さ同期"><option value="auto" ${track.sync==='auto'?'selected':''}>配置に同期</option><option value="fixed" ${track.sync==='fixed'?'selected':''}>ステップ数を指定</option><option value="original" ${track.sync==='original'?'selected':''}>原寸</option></select></label><label>8分音符 × <input type="number" data-track-sync-steps="${i}" aria-label="トラック${i+1}の同期ステップ数" min="0.25" max="128" step="0.25" value="${track.syncSteps}" ${track.sync!=='fixed'?'disabled':''}></label><output data-sync-length="${i}" class="hint"></output></div><div class="edit-line">${['LOW','MID','HI'].map((name,k)=>`<label><span class="eq-label">${name}</span><input type="range" min="-60" max="0" step="0.5" value="${track.eq[k]===-Infinity?-60:track.eq[k]}" data-track-eq="${i}" data-band="${k}" aria-label="トラック${i+1} ${name} dB"><input type="text" id="eq-value-${i}-${k}" data-track-eq-db="${i}" data-band="${k}" value="${formatDb(track.eq[k])}" aria-label="トラック${i+1} ${name}数値 dB" style="width:42px;min-height:23px;font-size:10px;padding:3px"></label>`).join('')}</div><div class="edit-line"><label>OUT <input type="range" min="-60" max="6" step="0.5" value="${track.volume===-Infinity?-60:track.volume}" data-track-volume="${i}" aria-label="トラック${i+1}出力 dB"><input type="text" data-track-db="${i}" value="${formatDb(track.volume)}" aria-label="トラック${i+1}出力数値 dB" style="width:58px;min-height:23px;font-size:10px;padding:3px">dB</label></div></div><div><div class="steps" style="grid-template-columns:repeat(${state.steps},1fr)">${Array.from({length:state.steps},(_,s)=>`<button class="step ${track.steps[s]?'active':''}" data-track-step="${i}" data-step="${s}" aria-label="トラック${i+1} ステップ${s+1}" aria-pressed="${track.steps[s]}" ${!state.committed||i>=state.count?'disabled':''}><span>${s+1}</span></button>`).join('')}</div></div></div>`).join('');
-  document.querySelectorAll('[data-track-step]').forEach(button=>button.addEventListener('click',()=>{const t=state.tracks[Number(button.dataset.trackStep)],s=Number(button.dataset.step);t.steps[s]=!t.steps[s];button.classList.toggle('active',t.steps[s]);button.setAttribute('aria-pressed',t.steps[s]);engine.refreshPatternTrack(Number(button.dataset.trackStep));queueSync();}));
+  $('tracks').innerHTML=state.tracks.map((track,i)=>`<div class="track-row ${!state.committed||i>=state.count?'empty':''}" data-track="${i}"><div><div class="track-label"><strong>TRACK ${String(i+1).padStart(2,'0')}</strong><span data-track-length="${i}">${state.buffers[i]?state.buffers[i].duration.toFixed(3)+' s':'EMPTY'}</span></div><canvas id="track-wave-${i}" aria-label="トラック${i+1}の波形"></canvas></div><div><div class="edit-line"><button data-track-play="${i}" data-preview="track-${i}" aria-pressed="false" aria-label="トラック${i+1}試聴">▶</button><button data-track-stop="${i}" aria-label="トラック${i+1}試聴停止">■</button><button data-track-loop="${i}" aria-pressed="${track.previewLoop}" aria-label="トラック${i+1}試聴ループ">↻</button><button data-track-mute="${i}" aria-pressed="${track.mute}" aria-label="トラック${i+1}ミュート">M</button><button data-track-solo="${i}" aria-pressed="${track.solo}" aria-label="トラック${i+1}ソロ">S</button><select data-track-mode="${i}" aria-label="トラック${i+1}発音方式"><option value="overlap" ${track.mode==='overlap'?'selected':''}>重ねる</option><option value="cut" ${track.mode==='cut'?'selected':''}>切る</option></select><label>PITCH <input type="number" data-track-pitch="${i}" min="-12" max="12" step="1" value="${track.pitch}"></label><label>¢ <input type="number" data-track-cents="${i}" min="-50" max="50" step="1" value="${track.cents}"></label></div><div class="edit-line sync-controls"><label>長さ <select data-track-sync="${i}" aria-label="トラック${i+1}の長さ同期"><option value="auto" ${track.sync==='auto'?'selected':''}>配置に同期</option><option value="fixed" ${track.sync==='fixed'?'selected':''}>ステップ数を指定</option><option value="original" ${track.sync==='original'?'selected':''}>原寸</option></select></label><label>8分音符 × <input type="number" data-track-sync-steps="${i}" aria-label="トラック${i+1}の同期ステップ数" min="0.25" max="128" step="0.25" value="${track.syncSteps}" ${track.sync!=='fixed'?'disabled':''}></label><output data-sync-length="${i}" class="hint"></output></div><div class="edit-line">${['LOW','MID','HI'].map((name,k)=>`<label><span class="eq-label">${name}</span><input type="range" min="-60" max="0" step="0.5" value="${track.eq[k]===-Infinity?-60:track.eq[k]}" data-track-eq="${i}" data-band="${k}" aria-label="トラック${i+1} ${name} dB"><input type="text" id="eq-value-${i}-${k}" data-track-eq-db="${i}" data-band="${k}" value="${formatDb(track.eq[k])}" aria-label="トラック${i+1} ${name}数値 dB" style="width:42px;min-height:23px;font-size:10px;padding:3px"></label>`).join('')}</div><div class="edit-line"><label>OUT <input type="range" min="-60" max="6" step="0.5" value="${track.volume===-Infinity?-60:track.volume}" data-track-volume="${i}" aria-label="トラック${i+1}出力 dB"><input type="text" data-track-db="${i}" value="${formatDb(track.volume)}" aria-label="トラック${i+1}出力数値 dB" style="width:58px;min-height:23px;font-size:10px;padding:3px">dB</label></div></div><div><div class="steps" style="grid-template-columns:repeat(${steps()},minmax(18px,1fr))">${Array.from({length:steps()},(_,s)=>{const tick=s*ticksPerStep(state.resolution);return `<button class="step ${track.steps[tick]?'active':''}" data-track-step="${i}" data-step="${s}" data-tick="${tick}" aria-label="トラック${i+1} ステップ${s+1}" aria-pressed="${track.steps[tick]}" ${!state.committed||i>=state.count?'disabled':''}><span>${s+1}</span></button>`;}).join('')}</div></div></div>`).join('');
+  document.querySelectorAll('[data-track-step]').forEach(button=>button.addEventListener('click',()=>{const t=state.tracks[Number(button.dataset.trackStep)],s=Number(button.dataset.tick);t.steps[s]=!t.steps[s];button.classList.toggle('active',t.steps[s]);button.setAttribute('aria-pressed',t.steps[s]);engine.refreshPatternTrack(Number(button.dataset.trackStep));queueSync();}));
   document.querySelectorAll('[data-track-play]').forEach(b=>b.addEventListener('click',guarded(()=>previewTrack(Number(b.dataset.trackPlay)))));
   document.querySelectorAll('[data-track-stop]').forEach(b=>b.addEventListener('click',()=>engine.stopPreview(`track-${b.dataset.trackStop}`)));
   for(const [attr,prop] of [['loop','previewLoop'],['mute','mute'],['solo','solo']])document.querySelectorAll(`[data-track-${attr}]`).forEach(b=>b.addEventListener('click',()=>{const i=Number(b.dataset['track'+attr[0].toUpperCase()+attr.slice(1)]),t=state.tracks[i];t[prop]=!t[prop];b.setAttribute('aria-pressed',t[prop]);if(attr==='loop'){const voice=engine.preview.get(`track-${i}`);if(voice)voice.source.loop=voice.loop=t.previewLoop;}else engine.updateGains();}));
@@ -253,6 +255,8 @@ function renderTracks(){
   document.querySelectorAll('[data-track-volume]').forEach(input=>input.addEventListener('input',()=>{const i=Number(input.dataset.trackVolume);state.tracks[i].volume=sliderDb(input.value);document.querySelector(`[data-track-db="${i}"]`).value=formatDb(state.tracks[i].volume);engine.updateGains();}));
   document.querySelectorAll('[data-track-db]').forEach(input=>input.addEventListener('change',guarded(()=>{const i=Number(input.dataset.trackDb),value=parseDb(input.value,6);state.tracks[i].volume=value;input.value=formatDb(value);document.querySelector(`[data-track-volume="${i}"]`).value=value===-Infinity?-60:value;engine.updateGains();})));
   state.tracks.forEach((_,i)=>{drawMini(i);updateTrackTiming(i);});updatePatternLength();refreshAvailability();
+  // 64 cells need more room than the shared column; let the table scroll instead.
+  document.querySelector('.sequencer').style.minWidth=steps()>32?`${575+steps()*21+24}px`:'';
 }
 function drawMini(index){const canvas=$(`track-wave-${index}`),ctx=canvas.getContext('2d'),width=canvas.width=240,height=canvas.height=70;ctx.clearRect(0,0,width,height);const buffer=state.buffers[index];if(!buffer)return;const data=buffer.getChannelData(0);ctx.strokeStyle='#65d4c0';ctx.beginPath();for(let x=0;x<width;x++){const a=Math.floor(x/width*data.length),b=Math.floor((x+1)/width*data.length);let max=0;for(let j=a;j<b;j++)max=Math.max(max,Math.abs(data[j]));ctx.moveTo(x,height/2-max*height*.44);ctx.lineTo(x,height/2+max*height*.44);}ctx.stroke();}
 async function previewTrack(index){
@@ -295,21 +299,21 @@ async function startSequence(){
     await initAudio();if(!valid())return;
     await flushPitch();if(!valid())return;
     engine.configure(state.tracks,state.settings,state.buffers,state.count);
-    padPlaybackVersion++;engine.stopPreviews();engine.start(state.bpm,state.steps,state.loop);
-    status(`${state.steps}/8拍子で再生中 · ${state.bpm} BPM`);
+    padPlaybackVersion++;engine.stopPreviews();engine.start(timing(),state.loop);
+    status(`${steps()}/${state.resolution}拍子で再生中 · ${state.bpm} BPM`);
   }finally{if(request===sequenceRequest){sequencePending=false;$('seq-play').textContent='▶ 再生';}}
 }
 function stopSequence(){sequenceRequest++;sequencePending=false;padPlaybackVersion++;sourceSeekVersion++;engine.stopAll();$('seq-play').textContent='▶ 再生';}
 async function exportSequence(){
   busy(true);status('パターン1周分をレンダリングしています…');
-  try{await flushBoundary();await flushPitch();const snapshot={tracks:structuredClone(state.tracks),buffers:[...state.buffers],count:state.count,settings:{...state.settings},bpm:state.bpm,steps:state.steps,masterDb:engine.masterDb,rate:state.rate,loop:state.loop};let channels=await renderPattern(snapshot);if($('export-channels').value==='1')channels=monoChannels(channels);const clipped=channels.some(c=>c.some(x=>Math.abs(x)>1));await saveAudio(channels,$('export-format').value,`future-funk-${snapshot.bpm}bpm-${snapshot.steps}steps`);status(clipped?'書き出しました。0 dBFS超過があります。マスターを下げて再出力してください。':'書き出しました · パターン1周分（再生と共通のループ境界）');}finally{busy(false);}
+  try{await flushBoundary();await flushPitch();const snapshot={tracks:structuredClone(state.tracks),buffers:[...state.buffers],count:state.count,settings:{...state.settings},timing:timing(),masterDb:engine.masterDb,rate:state.rate,loop:state.loop};let channels=await renderPattern(snapshot);if($('export-channels').value==='1')channels=monoChannels(channels);const clipped=channels.some(c=>c.some(x=>Math.abs(x)>1));await saveAudio(channels,$('export-format').value,`future-funk-${snapshot.timing.bpm}bpm-${steps()}steps`);status(clipped?'書き出しました。0 dBFS超過があります。マスターを下げて再出力してください。':'書き出しました · パターン1周分（再生と共通のループ境界）');}finally{busy(false);}
 }
 // Project files and autosave share one serialized form; buffers are rebuilt on load.
 const appVersion=typeof APP_VERSION==='string'?APP_VERSION:'dev';
 let autosaveAudioId=0,autosaveWrittenAudio=0,autosaveJson='',autosaveBusy=false,autosaveFailed=false,lastFileJson=null;
 function markSourceChanged(){autosaveAudioId++;}
 function projectState(){
-  return {appVersion,sourceName:state.sourceName,rate:state.rate,frames:state.original[0].length,sourceBpm:state.sourceBpm,bpmNote:$('bpm-confidence').textContent,bpm:state.bpm,followsSource:tempoFollowsSource,range:state.range,committed:state.committed,points:state.points,count:state.count,snap:state.snap,sourceLoop:state.sourceLoop,loopBeats:loopBeatsOverride,steps:state.steps,loop:state.loop,settings:state.settings,tracks:state.tracks,parts:state.parts,masterDb:engine.masterDb,exportChannels:Number($('export-channels').value),exportFormat:$('export-format').value};
+  return {appVersion,sourceName:state.sourceName,rate:state.rate,frames:state.original[0].length,sourceBpm:state.sourceBpm,bpmNote:$('bpm-confidence').textContent,bpm:state.bpm,followsSource:tempoFollowsSource,range:state.range,committed:state.committed,points:state.points,count:state.count,snap:state.snap,sourceLoop:state.sourceLoop,loopBeats:loopBeatsOverride,lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,loop:state.loop,settings:state.settings,tracks:state.tracks,parts:state.parts,masterDb:engine.masterDb,exportChannels:Number($('export-channels').value),exportFormat:$('export-format').value};
 }
 function projectJson(){return state.original?JSON.stringify(serializeProject(projectState())):null;}
 function updateDirty(json=projectJson()){$('project-dirty').textContent=json&&json!==lastFileJson?'未保存の変更あり':'';}
@@ -323,7 +327,7 @@ function syncControlsFromState(project){
   $('global-bpm').value=state.bpm;$('source-bpm').value=state.sourceBpm;$('sequence-bpm').textContent=state.bpm;$('bpm-confidence').textContent=project.bpmNote;
   if(loopBeatsOverride!=null)$('loop-beats').value=loopBeatsOverride;
   $('chop-count').value=state.count;$('snap').checked=state.snap;$('source-loop').setAttribute('aria-pressed',state.sourceLoop);$('seq-loop').setAttribute('aria-pressed',state.loop);
-  document.querySelectorAll('[data-steps]').forEach(e=>e.classList.toggle('active',Number(e.dataset.steps)===state.steps));$('signature').textContent=state.steps+'/8';
+  $('swing').value=state.swing;renderGridControls();
   $('eq-low').value=state.settings.low;$('eq-high').value=state.settings.high;$('eq-slope').value=state.settings.slope;
   $('master').value=engine.masterDb===-Infinity?-60:engine.masterDb;$('master-number').value=formatDb(engine.masterDb);
   $('export-channels').value=String(project.exportChannels);$('export-format').value=project.exportFormat;
@@ -335,7 +339,7 @@ async function restoreProject(project,channels){
   try{
     state.original=channels;state.sourceName=project.sourceName;$('source-name').textContent=project.sourceName;markSourceChanged();
     state.sourceBpm=project.sourceBpm;state.bpm=project.bpm;tempoFollowsSource=project.followsSource;loopBeatsOverride=project.loopBeats;
-    Object.assign(state,{range:[...project.range],committed:project.committed&&[...project.committed],points:[...project.points],count:project.count,snap:project.snap,sourceLoop:project.sourceLoop,steps:project.steps,loop:project.loop,settings:{...project.settings},tracks:project.tracks});
+    Object.assign(state,{range:[...project.range],committed:project.committed&&[...project.committed],points:[...project.points],count:project.count,snap:project.snap,sourceLoop:project.sourceLoop,lengthTicks:project.lengthTicks,resolution:project.resolution,swing:project.swing,loop:project.loop,settings:{...project.settings},tracks:project.tracks});
     project.parts.forEach((part,i)=>{state.parts[i].hp={...part.hp};state.parts[i].lp={...part.lp};});
     engine.setMaster(project.masterDb);syncControlsFromState(project);
     // rebuildSource also rebuilds every chop because committed is already set.
@@ -413,7 +417,7 @@ bind('calibrate-loop-bpm','click',async()=>{
   $('bpm-confidence').textContent=`選択範囲の${beats}拍から算出`;
   status(`選択範囲の${beats}拍から原曲BPMを ${bpm} に合わせました。`);
 });
-function updatePatternLength(){ $('pattern-length').textContent=`1ステップ ${stepSeconds(state.bpm).toFixed(3)} s / 1周 ${patternSeconds(state.bpm,state.steps).toFixed(3)} s`; }
+function updatePatternLength(){ $('pattern-length').textContent=`1ステップ ${gridSeconds(state.bpm,state.resolution).toFixed(3)} s / 1周 ${patternSeconds(state.bpm,state.lengthTicks).toFixed(3)} s`; }
 for(const id of ['range-start','range-end'])bind(id,'change',()=>{if(!state.channels)return;const a=Number($('range-start').value),b=Number($('range-end').value);if(!Number.isFinite(a)||!Number.isFinite(b)||a<0||b>duration()+.0005||b-a<.001){updateRangeFields();throw Error('開始 < 終了となる音源内の範囲を指定してください');}state.range=[a/duration(),Math.min(b/duration(),1)];updateRangeFields();});
 function hideEndpointMenu(){ $('source-endpoint-menu').classList.add('hidden'); }
 function setSourceTool(tool){
@@ -454,11 +458,44 @@ bind('chop-count','change',async()=>{const count=Number($('chop-count').value);i
 bind('snap','change',async()=>{
   state.snap=$('snap').checked;
   if(state.snap&&state.committed){busy(true);try{quantizeChops();await rebuildChops({preservePad:true});}finally{busy(false);}}
-  status(state.snap?'選択範囲の始点を拍頭として、8分音符のグリッドに分割位置を揃えました':'分割位置の吸着を解除しました');
+  status(state.snap?`選択範囲の始点を拍頭として、${state.resolution}分音符のグリッドに分割位置を揃えました`:'分割位置の吸着を解除しました');
 });
-bind('seq-play','click',startSequence);bind('seq-stop','click',()=>{stopSequence();status('再生を停止しました');});bind('seq-rewind','click',()=>{const playing=engine.playing;engine.stop();if(playing)engine.start(state.bpm,state.steps,state.loop);});
+bind('seq-play','click',startSequence);bind('seq-stop','click',()=>{stopSequence();status('再生を停止しました');});bind('seq-rewind','click',()=>{const playing=engine.playing;engine.stop();if(playing)engine.start(timing(),state.loop);});
 bind('seq-loop','click',()=>{state.loop=!state.loop;engine.setLoop(state.loop);$('seq-loop').setAttribute('aria-pressed',state.loop);});
-document.querySelectorAll('[data-steps]').forEach(b=>b.addEventListener('click',()=>{engine.stop();state.steps=Number(b.dataset.steps);document.querySelectorAll('[data-steps]').forEach(e=>e.classList.toggle('active',e===b));$('signature').textContent=state.steps+'/8';renderTracks();queueSync();status(`${state.steps}/8拍子 · 1周 ${patternSeconds(state.bpm,state.steps).toFixed(3)}秒。非表示のステップは保持します。`);}));
+// Pattern length is ½/1/2/4 bars in both grids; the grid changes the step size only.
+const barsLabel=ticks=>ticks===8?'½小節':`${ticks/16}小節`;
+function renderGridControls(){
+  $('step-buttons').innerHTML=PATTERN_TICKS.map(ticks=>`<button data-ticks="${ticks}" data-steps="${displaySteps(ticks,state.resolution)}" class="${ticks===state.lengthTicks?'active':''}">${displaySteps(ticks,state.resolution)}<small>${barsLabel(ticks)}</small></button>`).join('');
+  for(const resolution of [8,16])$(`grid-${resolution}`).setAttribute('aria-pressed',state.resolution===resolution);
+  $('signature').textContent=`${steps()}/${state.resolution}`;$('step-unit').textContent=`${state.resolution}分`;
+}
+$('step-buttons').addEventListener('click',event=>{
+  const button=event.target.closest('[data-ticks]');if(!button)return;
+  engine.stop();state.lengthTicks=Number(button.dataset.ticks);renderGridControls();renderTracks();queueSync();
+  status(`${steps()}/${state.resolution}拍子 · 1周 ${patternSeconds(state.bpm,state.lengthTicks).toFixed(3)}秒。非表示のステップは保持します。`);
+});
+async function setResolution(resolution){
+  if(resolution===state.resolution)return;
+  engine.stop();$('grid-confirm').classList.add('hidden');
+  if(resolution===8)state.tracks.forEach(t=>t.steps.forEach((_,i)=>{if(i%2)t.steps[i]=false;}));
+  state.resolution=resolution;renderGridControls();renderTracks();queueSync();
+  if(state.snap&&state.committed){busy(true);try{quantizeChops();await rebuildChops({preservePad:true});}finally{busy(false);}}
+  status(`グリッドを${resolution}分音符にしました · ${steps()}ステップ`);
+}
+bind('grid-16','click',()=>setResolution(16));
+bind('grid-8','click',()=>{
+  if(state.resolution===8)return;
+  const count=offbeatTicks(state.tracks);
+  if(!count)return setResolution(8);
+  $('grid-confirm-text').textContent=`16分の裏にあるノート ${count} 個が消えます`;$('grid-confirm').classList.remove('hidden');
+});
+bind('grid-confirm-yes','click',()=>setResolution(8));
+bind('grid-confirm-no','click',()=>$('grid-confirm').classList.add('hidden'));
+numeric('swing',50,75,value=>{
+  state.swing=Math.round(value);$('swing').value=state.swing;
+  // The cycle length is unchanged, so only the playing pattern buffers need rebuilding.
+  if(engine.playing){engine.timing=timing();for(let i=0;i<state.count;i++)engine.refreshPatternTrack(i);}
+});
 for(const [id,key,min,max] of [['eq-low','low',200,500],['eq-high','high',2000,4000]])numeric(id,min,max,value=>{state.settings[key]=value;engine.rebuildEQ();});
 bind('eq-slope','change',()=>{state.settings.slope=Number($('eq-slope').value);engine.rebuildEQ();});
 bind('master','input',()=>{const db=sliderDb($('master').value);$('master-number').value=formatDb(db);engine.setMaster(db);});
@@ -488,7 +525,7 @@ bind('demo','click',async()=>{
   await setSource(channels,'Future Funk Lab · Demo 120 BPM.wav',{knownBpm:120});
 });
 const masterResize=new ResizeObserver(()=>document.documentElement.style.setProperty('--master-height',`${$('master-strip').getBoundingClientRect().height}px`));masterResize.observe($('master-strip'));
-buildParts();renderTracks();drawSource();drawParts();refreshAvailability();offerAutosave();setInterval(autosaveTick,2000);
+buildParts();renderGridControls();renderTracks();drawSource();drawParts();refreshAvailability();offerAutosave();setInterval(autosaveTick,2000);
 let lastFrame=0;
 function animate(time){
   updateChopPlayback();
@@ -499,4 +536,4 @@ function animate(time){
 }requestAnimationFrame(animate);
 window.addEventListener('pagehide',()=>{recordStream?.getTracks().forEach(t=>t.stop());engine.stopAll();worker.terminate();});
 // Read-only diagnostics for integration checks; no audio data leaves this page.
-window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:state.steps,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks)}),engine};
+window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:steps(),lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks)}),engine};
