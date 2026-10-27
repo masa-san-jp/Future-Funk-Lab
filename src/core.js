@@ -97,6 +97,21 @@ export function encodeWav(channels,rate,{float=false}={}) {
   for(let i=0;i<length;i++)for(let c=0;c<count;c++){let x=clamp(channels[c][i]||0,-1,1);v.setInt16(offset,Math.round(x*(x<0?32768:32767)),true);offset+=2;}
   return data;
 }
+const CRC_TABLE=Array.from({length:256},(_,n)=>{let c=n;for(let k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;return c>>>0;});
+export function crc32(bytes){let c=0xffffffff;for(const b of bytes)c=CRC_TABLE[(c^b)&255]^(c>>>8);return (c^0xffffffff)>>>0;}
+// Uncompressed (STORE) ZIP. Audio barely compresses, and this avoids a dependency.
+export function zipStore(files,date=new Date()){
+  const time=(date.getHours()<<11)|(date.getMinutes()<<5)|(date.getSeconds()>>1),day=((date.getFullYear()-1980)<<9)|((date.getMonth()+1)<<5)|date.getDate();
+  const entries=files.map(f=>({name:new TextEncoder().encode(f.name),data:f.data instanceof Uint8Array?f.data:new Uint8Array(f.data)})).map(e=>({...e,crc:crc32(e.data)}));
+  const size=entries.reduce((n,e)=>n+30+e.name.length+e.data.length+46+e.name.length,22),out=new Uint8Array(size),v=new DataView(out.buffer);
+  const common=(at,e)=>{v.setUint16(at,20,true);v.setUint16(at+2,0x800,true);v.setUint16(at+4,0,true);v.setUint16(at+6,time,true);v.setUint16(at+8,day,true);v.setUint32(at+10,e.crc,true);v.setUint32(at+14,e.data.length,true);v.setUint32(at+18,e.data.length,true);v.setUint16(at+22,e.name.length,true);v.setUint16(at+24,0,true);};
+  let offset=0;
+  for(const e of entries){e.offset=offset;v.setUint32(offset,0x04034b50,true);common(offset+4,e);out.set(e.name,offset+30);out.set(e.data,offset+30+e.name.length);offset+=30+e.name.length+e.data.length;}
+  const directory=offset;
+  for(const e of entries){v.setUint32(offset,0x02014b50,true);v.setUint16(offset+4,20,true);common(offset+6,e);v.setUint16(offset+32,0,true);v.setUint16(offset+34,0,true);v.setUint16(offset+36,0,true);v.setUint32(offset+38,0,true);v.setUint32(offset+42,e.offset,true);out.set(e.name,offset+46);offset+=46+e.name.length;}
+  v.setUint32(offset,0x06054b50,true);v.setUint16(offset+8,entries.length,true);v.setUint16(offset+10,entries.length,true);v.setUint32(offset+12,offset-directory,true);v.setUint32(offset+16,directory,true);
+  return out;
+}
 // Reads PCM16 and float32 WAV without resampling, unlike decodeAudioData.
 export function decodeWav(buffer) {
   const bytes=buffer instanceof Uint8Array?buffer:new Uint8Array(buffer),v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);

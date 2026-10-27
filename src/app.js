@@ -1,6 +1,6 @@
 import './style.css';
-import { clamp, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, gridSeconds, trackSpanTicks, syncedFrames, displaySteps, ticksPerStep, offbeatTicks, PATTERN_TICKS } from './core.js';
-import { AudioEngine, audioBuffer, makePartGraph, renderPattern, renderPart } from './audio.js';
+import { clamp, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, zipStore, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, gridSeconds, trackSpanTicks, syncedFrames, displaySteps, ticksPerStep, offbeatTicks, PATTERN_TICKS } from './core.js';
+import { AudioEngine, audioBuffer, makePartGraph, renderPattern, renderPart, activeTrack } from './audio.js';
 import { Waveform } from './waveform.js';
 import { serializeProject, readProject, readProjectFile, packContainer, encodeSource, projectFileName } from './project.js';
 import { autosave } from './autosave.js';
@@ -231,8 +231,12 @@ async function playPart(index,offset=0,force=false){
   if(voice)document.querySelector(`[data-part-play="${index}"]`).classList.add('active');
 }
 async function seekPart(index,time){if(!state.mid)return;partWaves[index].cursor=time;partWaves[index].draw();$(`part-seek-${index}`).value=time/duration();$(`part-time-${index}`).textContent=`${formatTime(time)} / ${formatTime(duration())}`;if(engine.preview.has(`part-${index}`))await playPart(index,time,true);}
+async function encodeAudio(channels,format){
+  return format==='mp3'?{data:await job('mp3',channels),ext:'mp3',type:'audio/mpeg'}:{data:encodeWav(channels,state.rate),ext:'wav',type:'audio/wav'};
+}
 async function saveAudio(channels,format,name){
-  if(format==='mp3'){status('MP3にエンコードしています…');download(await job('mp3',channels),name+'.mp3','audio/mpeg');}else download(encodeWav(channels,state.rate),name+'.wav','audio/wav');
+  if(format==='mp3')status('MP3にエンコードしています…');
+  const file=await encodeAudio(channels,format);download(file.data,`${name}.${file.ext}`,file.type);
 }
 async function exportPart(index){
   busy(true);status(`${state.parts[index].name}を書き出しています…`);
@@ -304,9 +308,44 @@ async function startSequence(){
   }finally{if(request===sequenceRequest){sequencePending=false;$('seq-play').textContent='▶ 再生';}}
 }
 function stopSequence(){sequenceRequest++;sequencePending=false;padPlaybackVersion++;sourceSeekVersion++;engine.stopAll();$('seq-play').textContent='▶ 再生';}
+const CLIP_WARNING='0 dBFS超過があります。マスターを下げて再出力してください。';
+const hasNotes=track=>track.steps.slice(0,state.lengthTicks).some(Boolean);
+// Stems are exactly the tracks heard in the mix, so the stems sum to the mix.
+function stemPlan(tracks,count){
+  const included=[],excluded=[];
+  for(let i=0;i<count;i++){
+    const t=tracks[i],name=`TRACK ${String(i+1).padStart(2,'0')}`;
+    if(!state.buffers[i]||!hasNotes(t))continue;
+    if(activeTrack(t,tracks,count))included.push(i);
+    else excluded.push(`${name}は${t.mute?'ミュート':'ソロ対象外'}のため除外`);
+  }
+  return {included,excluded};
+}
 async function exportSequence(){
   busy(true);status('パターン1周分をレンダリングしています…');
-  try{await flushBoundary();await flushPitch();const snapshot={tracks:structuredClone(state.tracks),buffers:[...state.buffers],count:state.count,settings:{...state.settings},timing:timing(),masterDb:engine.masterDb,rate:state.rate,loop:state.loop};let channels=await renderPattern(snapshot);if($('export-channels').value==='1')channels=monoChannels(channels);const clipped=channels.some(c=>c.some(x=>Math.abs(x)>1));await saveAudio(channels,$('export-format').value,`future-funk-${snapshot.timing.bpm}bpm-${steps()}steps`);status(clipped?'書き出しました。0 dBFS超過があります。マスターを下げて再出力してください。':'書き出しました · パターン1周分（再生と共通のループ境界）');}finally{busy(false);}
+  try{
+    await flushBoundary();await flushPitch();
+    const snapshot={tracks:structuredClone(state.tracks),buffers:[...state.buffers],count:state.count,settings:{...state.settings},timing:timing(),masterDb:engine.masterDb,rate:state.rate,loop:state.loop};
+    const format=$('export-format').value,mono=$('export-channels').value==='1',name=`future-funk-${snapshot.timing.bpm}bpm-${steps()}steps`;
+    const finish=channels=>mono?monoChannels(channels):channels,overs=channels=>channels.some(c=>c.some(x=>Math.abs(x)>1));
+    if($('export-target').value==='stems'){
+      const {included,excluded}=stemPlan(snapshot.tracks,snapshot.count);
+      if(!included.length)throw Error('書き出すトラックがありません');
+      const files=[];let clipped=false;
+      for(const [n,i] of included.entries()){
+        status(`トラック別に書き出しています… ${n+1}/${included.length}`);
+        const channels=finish(await renderPattern(snapshot,{only:i}));clipped||=overs(channels);
+        const file=await encodeAudio(channels,format);files.push({name:`track${String(i+1).padStart(2,'0')}.${file.ext}`,data:file.data});
+      }
+      download(zipStore(files),`${name}-stems.zip`,'application/zip');
+      const note=excluded.length?`（${excluded.join('、')}）`:'';
+      status(clipped?`トラック別に書き出しました。${CLIP_WARNING}`:`トラック別に書き出しました · ${included.length}本${note}`);
+      return;
+    }
+    const channels=finish(await renderPattern(snapshot)),clipped=overs(channels);
+    await saveAudio(channels,format,name);
+    status(clipped?`書き出しました。${CLIP_WARNING}`:'書き出しました · パターン1周分（再生と共通のループ境界）');
+  }finally{busy(false);}
 }
 // Project files and autosave share one serialized form; buffers are rebuilt on load.
 const appVersion=typeof APP_VERSION==='string'?APP_VERSION:'dev';
