@@ -7,7 +7,7 @@ import { autosave } from './autosave.js';
 const $=id=>document.getElementById(id);
 const steps=()=>displaySteps(state.lengthTicks,state.resolution);
 const timing=()=>({bpm:state.bpm,lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing});
-const state={bpm:120,sourceBpm:120,rate:44100,original:null,channels:null,range:[0,1],committed:null,points:[],count:4,lengthTicks:32,resolution:8,swing:50,snap:false,loop:true,sourceLoop:false,tracks:Array.from({length:8},(_,i)=>makeTrack(i)),settings:{low:300,high:3000,slope:12},buffers:[],parts:[{name:'ボーカル',key:'vocal',hp:{on:true,freq:200,slope:12},lp:{on:false,freq:2000,slope:12}},{name:'ベース',key:'bass',hp:{on:false,freq:200,slope:12},lp:{on:true,freq:250,slope:12}}],partGraphs:[],busy:false,generation:0,recorded:null,recording:false,sourceName:''};
+const state={bpm:120,sourceBpm:120,rate:44100,original:null,channels:null,range:[0,1],committed:null,points:[],count:4,lengthTicks:32,resolution:8,swing:50,snap:false,loop:true,sourceLoop:false,tracks:Array.from({length:8},(_,i)=>makeTrack(i)),settings:{low:300,high:3000,slope:12},buffers:[],parts:[{name:'ボーカル',key:'vocal',hp:{on:true,freq:200,slope:12},lp:{on:false,freq:2000,slope:12}},{name:'ベース',key:'bass',hp:{on:false,freq:200,slope:12},lp:{on:true,freq:250,slope:12}}],partGraphs:[],busy:false,generation:0,recorded:null,recording:false,sourceName:'',selectedTrack:0};
 let sourcePlayhead=0,sourceAudioBuffer=null,sourceSeekVersion=0,tempoFollowsSource=true,endpointMenuTime=0,padPlaybackVersion=0,loopBeatsOverride=null;
 let workerCounter=0,workerJobs=new Map();
 const workerUrl=URL.createObjectURL(new Blob([WORKER_SOURCE],{type:'text/javascript'}));
@@ -242,30 +242,90 @@ async function exportPart(index){
   busy(true);status(`${state.parts[index].name}を書き出しています…`);
   try{const channels=await renderPart(state.mid,state.rate,state.parts[index]);await saveAudio(channels,$(`part-format-${index}`).value,`future-funk-${state.parts[index].key}-${state.bpm}bpm`);status(`${state.parts[index].name}を書き出しました`);}finally{busy(false);}
 }
-function renderTracks(){
-  $('tracks').innerHTML=state.tracks.map((track,i)=>`<div class="track-row ${!state.committed||i>=state.count?'empty':''}" data-track="${i}"><div><div class="track-label"><strong>TRACK ${String(i+1).padStart(2,'0')}</strong><span data-track-length="${i}">${state.buffers[i]?state.buffers[i].duration.toFixed(3)+' s':'EMPTY'}</span></div><canvas id="track-wave-${i}" aria-label="トラック${i+1}の波形"></canvas></div><div><div class="edit-line"><button data-track-play="${i}" data-preview="track-${i}" aria-pressed="false" aria-label="トラック${i+1}試聴">▶</button><button data-track-stop="${i}" aria-label="トラック${i+1}試聴停止">■</button><button data-track-loop="${i}" aria-pressed="${track.previewLoop}" aria-label="トラック${i+1}試聴ループ">↻</button><button data-track-mute="${i}" aria-pressed="${track.mute}" aria-label="トラック${i+1}ミュート">M</button><button data-track-solo="${i}" aria-pressed="${track.solo}" aria-label="トラック${i+1}ソロ">S</button><select data-track-mode="${i}" aria-label="トラック${i+1}発音方式"><option value="overlap" ${track.mode==='overlap'?'selected':''}>重ねる</option><option value="cut" ${track.mode==='cut'?'selected':''}>切る</option></select><label>PITCH <input type="number" data-track-pitch="${i}" min="-12" max="12" step="1" value="${track.pitch}"></label><label>¢ <input type="number" data-track-cents="${i}" min="-50" max="50" step="1" value="${track.cents}"></label></div><div class="edit-line sync-controls"><label>長さ <select data-track-sync="${i}" aria-label="トラック${i+1}の長さ同期"><option value="auto" ${track.sync==='auto'?'selected':''}>配置に同期</option><option value="fixed" ${track.sync==='fixed'?'selected':''}>ステップ数を指定</option><option value="original" ${track.sync==='original'?'selected':''}>原寸</option></select></label><label>8分音符 × <input type="number" data-track-sync-steps="${i}" aria-label="トラック${i+1}の同期ステップ数" min="0.25" max="128" step="0.25" value="${track.syncSteps}" ${track.sync!=='fixed'?'disabled':''}></label><output data-sync-length="${i}" class="hint"></output></div><div class="edit-line">${['LOW','MID','HI'].map((name,k)=>`<label><span class="eq-label">${name}</span><input type="range" min="-60" max="0" step="0.5" value="${track.eq[k]===-Infinity?-60:track.eq[k]}" data-track-eq="${i}" data-band="${k}" aria-label="トラック${i+1} ${name} dB"><input type="text" id="eq-value-${i}-${k}" data-track-eq-db="${i}" data-band="${k}" value="${formatDb(track.eq[k])}" aria-label="トラック${i+1} ${name}数値 dB" style="width:42px;min-height:23px;font-size:10px;padding:3px"></label>`).join('')}</div><div class="edit-line"><label>OUT <input type="range" min="-60" max="6" step="0.5" value="${track.volume===-Infinity?-60:track.volume}" data-track-volume="${i}" aria-label="トラック${i+1}出力 dB"><input type="text" data-track-db="${i}" value="${formatDb(track.volume)}" aria-label="トラック${i+1}出力数値 dB" style="width:58px;min-height:23px;font-size:10px;padding:3px">dB</label></div></div><div><div class="steps" style="grid-template-columns:repeat(${steps()},minmax(18px,1fr))">${Array.from({length:steps()},(_,s)=>{const tick=s*ticksPerStep(state.resolution);return `<button class="step ${track.steps[tick]?'active':''}" data-track-step="${i}" data-step="${s}" data-tick="${tick}" aria-label="トラック${i+1} ステップ${s+1}" aria-pressed="${track.steps[tick]}" ${!state.committed||i>=state.count?'disabled':''}><span>${s+1}</span></button>`;}).join('')}</div></div></div>`).join('');
-  document.querySelectorAll('[data-track-step]').forEach(button=>button.addEventListener('click',()=>{const t=state.tracks[Number(button.dataset.trackStep)],s=Number(button.dataset.tick);t.steps[s]=!t.steps[s];button.classList.toggle('active',t.steps[s]);button.setAttribute('aria-pressed',t.steps[s]);engine.refreshPatternTrack(Number(button.dataset.trackStep));queueSync();}));
-  document.querySelectorAll('[data-track-play]').forEach(b=>b.addEventListener('click',guarded(()=>previewTrack(Number(b.dataset.trackPlay)))));
-  document.querySelectorAll('[data-track-stop]').forEach(b=>b.addEventListener('click',()=>engine.stopPreview(`track-${b.dataset.trackStop}`)));
-  for(const [attr,prop] of [['loop','previewLoop'],['mute','mute'],['solo','solo']])document.querySelectorAll(`[data-track-${attr}]`).forEach(b=>b.addEventListener('click',()=>{const i=Number(b.dataset['track'+attr[0].toUpperCase()+attr.slice(1)]),t=state.tracks[i];t[prop]=!t[prop];b.setAttribute('aria-pressed',t[prop]);if(attr==='loop'){const voice=engine.preview.get(`track-${i}`);if(voice)voice.source.loop=voice.loop=t.previewLoop;}else engine.updateGains();}));
-  document.querySelectorAll('[data-track-sync]').forEach(input=>input.addEventListener('change',()=>{const i=Number(input.dataset.trackSync);state.tracks[i].sync=input.value;document.querySelector(`[data-track-sync-steps="${i}"]`).disabled=input.value!=='fixed';queueSync();}));
-  document.querySelectorAll('[data-track-sync-steps]').forEach(input=>input.addEventListener('change',guarded(()=>{const i=Number(input.dataset.trackSyncSteps),value=Number(input.value);if(!Number.isFinite(value)||value<.25||value>128)throw Error('同期ステップ数は0.25〜128で指定してください');state.tracks[i].syncSteps=value;queueSync();})));
-  document.querySelectorAll('[data-track-mode]').forEach(e=>e.addEventListener('change',()=>{const i=Number(e.dataset.trackMode);state.tracks[i].mode=e.value;engine.refreshPatternTrack(i);}));
-  for(const type of ['pitch','cents'])document.querySelectorAll(`[data-track-${type}]`).forEach(input=>input.addEventListener('change',guarded(()=>{
-    const i=Number(input.dataset[type==='pitch'?'trackPitch':'trackCents']);const value=Number(input.value);if(!Number.isFinite(value))throw Error('ピッチを数値で入力してください');state.tracks[i][type]=clamp(Math.round(value),type==='pitch'?-12:-50,type==='pitch'?12:50);input.value=state.tracks[i][type];queuePitch(i);
-  })));
-  document.querySelectorAll('[data-track-eq]').forEach(input=>input.addEventListener('input',()=>{const i=Number(input.dataset.trackEq),band=Number(input.dataset.band);state.tracks[i].eq[band]=sliderDb(input.value);$(`eq-value-${i}-${band}`).value=formatDb(state.tracks[i].eq[band]);engine.updateGains();}));
-  document.querySelectorAll('[data-track-eq-db]').forEach(input=>input.addEventListener('change',guarded(()=>{const i=Number(input.dataset.trackEqDb),band=Number(input.dataset.band),value=parseDb(input.value,0);state.tracks[i].eq[band]=value;input.value=formatDb(value);document.querySelector(`[data-track-eq="${i}"][data-band="${band}"]`).value=value===-Infinity?-60:value;engine.updateGains();})));
-  document.querySelectorAll('[data-track-volume]').forEach(input=>input.addEventListener('input',()=>{const i=Number(input.dataset.trackVolume);state.tracks[i].volume=sliderDb(input.value);document.querySelector(`[data-track-db="${i}"]`).value=formatDb(state.tracks[i].volume);engine.updateGains();}));
-  document.querySelectorAll('[data-track-db]').forEach(input=>input.addEventListener('change',guarded(()=>{const i=Number(input.dataset.trackDb),value=parseDb(input.value,6);state.tracks[i].volume=value;input.value=formatDb(value);document.querySelector(`[data-track-volume="${i}"]`).value=value===-Infinity?-60:value;engine.updateGains();})));
-  state.tracks.forEach((_,i)=>{drawMini(i);updateTrackTiming(i);});updatePatternLength();refreshAvailability();
-  // 64 cells need more room than the shared column; let the table scroll instead.
-  document.querySelector('.sequencer').style.minWidth=steps()>32?`${575+steps()*21+24}px`:'';
+// Compact view shows one 40px row per track plus a single editor for the selected
+// track; detail view keeps every editor inline. Both share these pieces.
+let trackView='compact';
+try{if(localStorage.getItem('ffl:view')==='detail')trackView='detail';}catch{}
+const trackName=i=>`TRACK ${String(i+1).padStart(2,'0')}`;
+const trackLength=i=>state.buffers[i]?state.buffers[i].duration.toFixed(3)+' s':'EMPTY';
+function trackButtonsHtml(i,{stop=true}={}){
+  const track=state.tracks[i];
+  return `<button data-track-play="${i}" data-preview="track-${i}" aria-pressed="false" aria-label="トラック${i+1}試聴">▶</button>${stop?`<button data-track-stop="${i}" aria-label="トラック${i+1}試聴停止">■</button>`:''}<button data-track-mute="${i}" aria-pressed="${track.mute}" aria-label="トラック${i+1}ミュート">M</button><button data-track-solo="${i}" aria-pressed="${track.solo}" aria-label="トラック${i+1}ソロ">S</button>`;
 }
+function trackEditorHtml(i,{transport=true}={}){
+  const track=state.tracks[i];
+  const loop=`<button data-track-loop="${i}" aria-pressed="${track.previewLoop}" aria-label="トラック${i+1}試聴ループ">↻</button>`;
+  const head=transport?trackButtonsHtml(i).replace('<button data-track-mute',`${loop}<button data-track-mute`):loop;
+  return `<div class="edit-line">${head}<select data-track-mode="${i}" aria-label="トラック${i+1}発音方式"><option value="overlap" ${track.mode==='overlap'?'selected':''}>重ねる</option><option value="cut" ${track.mode==='cut'?'selected':''}>切る</option></select><label>PITCH <input type="number" data-track-pitch="${i}" min="-12" max="12" step="1" value="${track.pitch}"></label><label>¢ <input type="number" data-track-cents="${i}" min="-50" max="50" step="1" value="${track.cents}"></label></div><div class="edit-line sync-controls"><label>長さ <select data-track-sync="${i}" aria-label="トラック${i+1}の長さ同期"><option value="auto" ${track.sync==='auto'?'selected':''}>配置に同期</option><option value="fixed" ${track.sync==='fixed'?'selected':''}>ステップ数を指定</option><option value="original" ${track.sync==='original'?'selected':''}>原寸</option></select></label><label>8分音符 × <input type="number" data-track-sync-steps="${i}" aria-label="トラック${i+1}の同期ステップ数" min="0.25" max="128" step="0.25" value="${track.syncSteps}" ${track.sync!=='fixed'?'disabled':''}></label><output data-sync-length="${i}" class="hint"></output></div><div class="edit-line">${['LOW','MID','HI'].map((name,k)=>`<label><span class="eq-label">${name}</span><input type="range" min="-60" max="0" step="0.5" value="${track.eq[k]===-Infinity?-60:track.eq[k]}" data-track-eq="${i}" data-band="${k}" aria-label="トラック${i+1} ${name} dB"><input type="text" id="eq-value-${i}-${k}" data-track-eq-db="${i}" data-band="${k}" value="${formatDb(track.eq[k])}" aria-label="トラック${i+1} ${name}数値 dB" style="width:42px;min-height:23px;font-size:10px;padding:3px"></label>`).join('')}</div><div class="edit-line"><label>OUT <input type="range" min="-60" max="6" step="0.5" value="${track.volume===-Infinity?-60:track.volume}" data-track-volume="${i}" aria-label="トラック${i+1}出力 dB"><input type="text" data-track-db="${i}" value="${formatDb(track.volume)}" aria-label="トラック${i+1}出力数値 dB" style="width:58px;min-height:23px;font-size:10px;padding:3px">dB</label></div>`;
+}
+function trackStepsHtml(i){
+  const track=state.tracks[i];
+  return `<div class="steps" style="grid-template-columns:repeat(${steps()},minmax(18px,1fr))">${Array.from({length:steps()},(_,s)=>{const tick=s*ticksPerStep(state.resolution);return `<button class="step ${track.steps[tick]?'active':''}" data-track-step="${i}" data-step="${s}" data-tick="${tick}" aria-label="トラック${i+1} ステップ${s+1}" aria-pressed="${track.steps[tick]}" ${!state.committed||i>=state.count?'disabled':''}><span>${s+1}</span></button>`;}).join('')}</div>`;
+}
+function renderTracks(){
+  if(state.selectedTrack>=state.count)state.selectedTrack=0;
+  const compact=trackView==='compact';
+  $('tracks').innerHTML=state.tracks.map((_,i)=>{
+    const empty=!state.committed||i>=state.count?'empty':'';
+    if(!compact)return `<div class="track-row ${empty}" data-track="${i}"><div><div class="track-label"><strong>${trackName(i)}</strong><span data-track-length="${i}">${trackLength(i)}</span></div><canvas id="track-wave-${i}" aria-label="トラック${i+1}の波形"></canvas></div><div>${trackEditorHtml(i)}</div><div>${trackStepsHtml(i)}</div></div>`;
+    const selected=i===state.selectedTrack;
+    return `<div class="track-row compact ${empty} ${selected?'selected':''}" data-track="${i}"><div class="track-label"><button class="track-select" data-track-select="${i}" aria-pressed="${selected}" aria-label="${trackName(i)}を編集">${trackName(i)}</button><span data-track-length="${i}">${trackLength(i)}</span><canvas id="track-wave-${i}" aria-label="トラック${i+1}の波形"></canvas></div><div class="track-buttons">${trackButtonsHtml(i,{stop:false})}</div><div>${trackStepsHtml(i)}</div></div>`;
+  }).join('');
+  const editor=$('track-editor');
+  editor.classList.toggle('hidden',!compact);
+  editor.innerHTML=compact?`<div class="track-editor-head"><strong>編集中：${trackName(state.selectedTrack)}</strong></div>${trackEditorHtml(state.selectedTrack,{transport:false})}`:'';
+  document.querySelector('.sequencer').classList.toggle('compact',compact);
+  for(const view of ['compact','detail'])$(`view-${view}`).setAttribute('aria-pressed',trackView===view);
+  state.tracks.forEach((_,i)=>{drawMini(i);updateTrackTiming(i);});updatePatternLength();refreshAvailability();
+  for(const [key,voice] of engine.preview)if(key.startsWith('track-')&&!voice.stopped)document.querySelectorAll(`[data-track-play="${key.slice(6)}"]`).forEach(b=>b.classList.add('active'));
+  // 64 cells need more room than the shared column; let the table scroll instead.
+  document.querySelector('.sequencer').style.minWidth=steps()>32?`${(compact?280:575)+steps()*21+24}px`:'';
+}
+function setTrackView(view){
+  trackView=view;try{localStorage.setItem('ffl:view',view);}catch{}
+  renderTracks();
+}
+bind('view-compact','click',()=>setTrackView('compact'));
+bind('view-detail','click',()=>setTrackView('detail'));
+// Track controls are rendered in two places, so events are delegated from the section.
+const pressAll=(attr,i,value)=>document.querySelectorAll(`[data-track-${attr}="${i}"]`).forEach(b=>b.setAttribute('aria-pressed',value));
+const trackClicks={
+  trackStep(button,i){const t=state.tracks[i],tick=Number(button.dataset.tick);t.steps[tick]=!t.steps[tick];button.classList.toggle('active',t.steps[tick]);button.setAttribute('aria-pressed',t.steps[tick]);engine.refreshPatternTrack(i);queueSync();},
+  trackPlay:(_,i)=>previewTrack(i),
+  trackStop:(_,i)=>engine.stopPreview(`track-${i}`),
+  trackLoop(_,i){const t=state.tracks[i];t.previewLoop=!t.previewLoop;pressAll('loop',i,t.previewLoop);const voice=engine.preview.get(`track-${i}`);if(voice)voice.source.loop=voice.loop=t.previewLoop;},
+  trackMute(_,i){const t=state.tracks[i];t.mute=!t.mute;pressAll('mute',i,t.mute);engine.updateGains();},
+  trackSolo(_,i){const t=state.tracks[i];t.solo=!t.solo;pressAll('solo',i,t.solo);engine.updateGains();},
+  trackSelect(_,i){state.selectedTrack=i;renderTracks();}
+};
+const trackChanges={
+  trackMode(input,i){state.tracks[i].mode=input.value;engine.refreshPatternTrack(i);},
+  trackSync(input,i){state.tracks[i].sync=input.value;document.querySelectorAll(`[data-track-sync-steps="${i}"]`).forEach(e=>e.disabled=input.value!=='fixed');queueSync();},
+  trackSyncSteps(input,i){const value=Number(input.value);if(!Number.isFinite(value)||value<.25||value>128)throw Error('同期ステップ数は0.25〜128で指定してください');state.tracks[i].syncSteps=value;queueSync();},
+  trackPitch:(input,i)=>setTrackPitch(input,i,'pitch'),
+  trackCents:(input,i)=>setTrackPitch(input,i,'cents'),
+  trackEqDb(input,i){const band=Number(input.dataset.band),value=parseDb(input.value,0);state.tracks[i].eq[band]=value;input.value=formatDb(value);document.querySelector(`[data-track-eq="${i}"][data-band="${band}"]`).value=value===-Infinity?-60:value;engine.updateGains();},
+  trackDb(input,i){const value=parseDb(input.value,6);state.tracks[i].volume=value;input.value=formatDb(value);document.querySelector(`[data-track-volume="${i}"]`).value=value===-Infinity?-60:value;engine.updateGains();}
+};
+const trackInputs={
+  trackEq(input,i){const band=Number(input.dataset.band);state.tracks[i].eq[band]=sliderDb(input.value);$(`eq-value-${i}-${band}`).value=formatDb(state.tracks[i].eq[band]);engine.updateGains();},
+  trackVolume(input,i){state.tracks[i].volume=sliderDb(input.value);document.querySelector(`[data-track-db="${i}"]`).value=formatDb(state.tracks[i].volume);engine.updateGains();}
+};
+function setTrackPitch(input,i,type){
+  const value=Number(input.value);if(!Number.isFinite(value))throw Error('ピッチを数値で入力してください');
+  state.tracks[i][type]=clamp(Math.round(value),type==='pitch'?-12:-50,type==='pitch'?12:50);input.value=state.tracks[i][type];queuePitch(i);
+}
+function delegate(type,handlers,selector){
+  $('sequence').addEventListener(type,event=>{
+    const element=event.target.closest(selector);if(!element||element.disabled)return;
+    const key=Object.keys(handlers).find(k=>k in element.dataset);if(key)guarded(handlers[key])(element,Number(element.dataset[key]));
+  });
+}
+delegate('click',trackClicks,'button');delegate('change',trackChanges,'input,select');delegate('input',trackInputs,'input[type=range]');
 function drawMini(index){const canvas=$(`track-wave-${index}`),ctx=canvas.getContext('2d'),width=canvas.width=240,height=canvas.height=70;ctx.clearRect(0,0,width,height);const buffer=state.buffers[index];if(!buffer)return;const data=buffer.getChannelData(0);ctx.strokeStyle='#65d4c0';ctx.beginPath();for(let x=0;x<width;x++){const a=Math.floor(x/width*data.length),b=Math.floor((x+1)/width*data.length);let max=0;for(let j=a;j<b;j++)max=Math.max(max,Math.abs(data[j]));ctx.moveTo(x,height/2-max*height*.44);ctx.lineTo(x,height/2+max*height*.44);}ctx.stroke();}
 async function previewTrack(index){
   const stopped=engine.stopVersion,generation=state.generation;await flushPitch();await initAudio();if(stopped!==engine.stopVersion||generation!==state.generation||!state.buffers[index])return;const key=`track-${index}`;if(engine.preview.has(key)){engine.stopPreview(key);return;}
-  const voice=await engine.playPreview(key,state.buffers[index],engine.graphs[index].input,state.tracks[index].previewLoop,0,index);if(voice)document.querySelector(`[data-track-play="${index}"]`).classList.add('active');
+  const voice=await engine.playPreview(key,state.buffers[index],engine.graphs[index].input,state.tracks[index].previewLoop,0,index);if(voice)document.querySelectorAll(`[data-track-play="${index}"]`).forEach(b=>b.classList.add('active'));
 }
 const pendingPitch=new Map();
 function launchTrackBuild(index,version,epoch,pitchChange){
@@ -575,4 +635,4 @@ function animate(time){
 }requestAnimationFrame(animate);
 window.addEventListener('pagehide',()=>{recordStream?.getTracks().forEach(t=>t.stop());engine.stopAll();worker.terminate();});
 // Read-only diagnostics for integration checks; no audio data leaves this page.
-window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:steps(),lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks)}),engine};
+window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:steps(),lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks),view:trackView,selectedTrack:state.selectedTrack}),engine};

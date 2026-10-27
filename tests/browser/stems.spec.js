@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+// These tests use every track's inline editor, which the detail view shows.
+test.beforeEach(async({page})=>{await page.addInitScript(()=>{try{localStorage.setItem('ffl:view','detail');}catch{}});});
 async function download(page){const promise=page.waitForEvent('download');await page.locator('#export').click();const file=await promise;return {name:file.suggestedFilename(),data:await readFile(await file.path())};}
 // STORE entries can be read by walking the local headers.
 function unzip(data){

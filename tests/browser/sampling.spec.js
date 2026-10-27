@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+// These tests use every track's inline editor, which the detail view shows.
+test.beforeEach(async({page})=>{await page.addInitScript(()=>{try{localStorage.setItem('ffl:view','detail');}catch{}});});
 async function start(page){await page.goto('/');await page.locator('#demo').click();await expect(page.locator('#sample')).toBeEnabled();await page.locator('#source-wave').scrollIntoViewIfNeeded();}
 async function state(page){return page.evaluate(()=>window.futureFunkLab.getState());}
 async function zoom(page,value){await page.locator('#zoom').fill(String(value));await page.locator('#zoom').dispatchEvent('input');}

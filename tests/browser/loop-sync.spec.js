@@ -1,6 +1,8 @@
 import {test,expect} from '@playwright/test';
 import {readFile} from 'node:fs/promises';
 import {encodeWav} from '../../src/core.js';
+// These tests use every track's inline editor, which the detail view shows.
+test.beforeEach(async({page})=>{await page.addInitScript(()=>{try{localStorage.setItem('ffl:view','detail');}catch{}});});
 const state=page=>page.evaluate(()=>window.futureFunkLab.getState());
 async function loaded(page){await page.goto('/');await page.locator('#demo').click();await expect(page.locator('#sample')).toBeEnabled();await page.locator('#range-end').fill('7.232');await page.locator('#range-end').press('Tab');await page.locator('#sample').click();await expect(page.locator('#seq-play')).toBeEnabled();}
 async function pattern(page){for(const s of [0,4,8])await page.locator(`[data-track-step="0"][data-step="${s}"]`).click();await page.locator('[data-track-step="3"][data-step="12"]').click();}
