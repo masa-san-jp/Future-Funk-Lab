@@ -1,8 +1,8 @@
 import { build } from 'esbuild';
 import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
-const worker=await build({entryPoints:['src/worker.js'],bundle:true,write:false,format:'iife',target:'es2022',legalComments:'inline'});
-const app=await build({entryPoints:['src/app.js'],bundle:true,write:false,outfile:'app.js',format:'iife',target:'es2022',legalComments:'inline',define:{WORKER_SOURCE:JSON.stringify(worker.outputFiles[0].text)}});
 const {version}=JSON.parse(await readFile('package.json','utf8'));
+const worker=await build({entryPoints:['src/worker.js'],bundle:true,write:false,format:'iife',target:'es2022',legalComments:'inline'});
+const app=await build({entryPoints:['src/app.js'],bundle:true,write:false,outfile:'app.js',format:'iife',target:'es2022',legalComments:'inline',define:{WORKER_SOURCE:JSON.stringify(worker.outputFiles[0].text),APP_VERSION:JSON.stringify(version)}});
 let html=(await readFile('index.html','utf8')).replace('/* APP_VERSION */',()=>version);
 const js=app.outputFiles.find(f=>f.path.endsWith('.js')).text.replace(/<\/script/gi,'<\\/script');
 const css=app.outputFiles.find(f=>f.path.endsWith('.css')).text;
