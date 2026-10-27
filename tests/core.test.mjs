@@ -73,3 +73,16 @@ test('スウィングは選んでいるグリッドの裏のステップだけ�
   assert.deepEqual(triggerFrames(track,{lengthTicks:16,resolution:8,swing:66},period),[0,Math.round(.33*44100)]);
   assert.equal(offbeatTicks([track]),2);
 });
+
+test('ZIP（無圧縮）は既知のCRC32と、ローカルヘッダ・中央ディレクトリ・終端レコードを持つ',async()=>{
+  const {crc32,zipStore}=await import('../src/core.js');
+  assert.equal(crc32(new TextEncoder().encode('123456789')),0xcbf43926);
+  const a=new TextEncoder().encode('hello'),b=new Uint8Array([0,1,2,255]);
+  const zip=zipStore([{name:'track01.wav',data:a},{name:'track03.wav',data:b}],new Date(2026,9,28,12,34,56)),v=new DataView(zip.buffer);
+  assert.equal(v.getUint32(0,true),0x04034b50);assert.equal(v.getUint16(8,true),0);assert.equal(v.getUint32(14,true),crc32(a));assert.equal(v.getUint32(18,true),5);
+  assert.equal(new TextDecoder().decode(zip.subarray(30,41)),'track01.wav');assert.deepEqual([...zip.subarray(41,46)],[...a]);
+  const end=zip.length-22;assert.equal(v.getUint32(end,true),0x06054b50);assert.equal(v.getUint16(end+10,true),2);
+  const directory=v.getUint32(end+16,true);assert.equal(v.getUint32(directory,true),0x02014b50);assert.equal(v.getUint32(directory+42,true),0);
+  const second=directory+46+11;assert.equal(v.getUint32(second,true),0x02014b50);assert.equal(v.getUint32(second+42,true),46);assert.equal(v.getUint32(second+16,true),crc32(b));
+  assert.equal(v.getUint16(10,true),(12<<11)|(34<<5)|28);assert.equal(v.getUint16(12,true),((2026-1980)<<9)|(10<<5)|28);
+});

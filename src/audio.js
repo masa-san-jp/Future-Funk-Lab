@@ -147,13 +147,14 @@ export class AudioEngine {
   stopAll(){this.stop();this.stopPreviews();}
   meter(){if(!this.analysers)return [-Infinity,-Infinity];return this.analysers.map((a,i)=>{a.getFloatTimeDomainData(this.meterData);let max=0;for(const x of this.meterData)max=Math.max(max,Math.abs(x));const db=max>0?20*Math.log10(max):-Infinity;this.peak[i]=Math.max(this.peak[i],db);if(db>0)this.clip[i]=true;return db;});}
 }
-export async function renderPattern({tracks,buffers,count,settings,timing,masterDb,rate=44100,loop=true}){
+// only: render a single track (a stem) through the same EQ, output and master gain.
+export async function renderPattern({tracks,buffers,count,settings,timing,masterDb,rate=44100,loop=true},{only=null}={}){
   const length=Math.round(patternSeconds(timing.bpm,timing.lengthTicks)*rate);
   // Warm the crossover filters with preceding cycles, then export a complete cycle.
   const context=new OfflineAudioContext(2,length*(loop?3:1),rate);
   const master=context.createGain();master.gain.value=dbGain(masterDb);master.connect(context.destination);
   tracks.forEach((track,i)=>{
-    if(!buffers[i]||!activeTrack(track,tracks,count))return;
+    if(!buffers[i]||!activeTrack(track,tracks,count)||(only!=null&&i!==only))return;
     const graph=makeTrackGraph(context,track,settings,master),source=context.createBufferSource();
     source.buffer=patternTrack(context,buffers[i],track,timing,{loop});source.loop=loop;source.connect(graph.input);source.start();
   });
