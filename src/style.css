@@ -18,3 +18,12 @@
 @media(max-width:900px){header{flex-wrap:wrap}.header-tools{width:100%;justify-content:space-between;gap:12px}.project-tools{flex-wrap:wrap}.dirty{min-width:0}}
 
 .step-buttons button small{display:block;font-size:9px;opacity:.75;line-height:1}.grid-confirm{margin:0 20px 10px;padding:10px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--pink);border-radius:6px;font-size:12px}.grid-confirm span{flex:1;min-width:220px}
+.view-toggle{display:inline-flex;gap:4px;align-items:center;font-size:11px}.view-toggle span{margin-right:4px}.view-toggle button{min-height:26px;font-size:11px;padding:3px 9px}
+.compact-only{display:none}.sequencer.compact .compact-only{display:inline}.sequencer.compact .detail-only{display:none}
+.track-editor{margin:0 20px 12px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--pink);border-radius:6px;background:#151923}.track-editor-head{font-size:12px;color:var(--mint);margin-bottom:8px;font-family:ui-monospace,SFMono-Regular,monospace}.track-editor .edit-line{flex-wrap:wrap}
+.sequencer.compact .seq-header,.track-row.compact{grid-template-columns:190px 96px minmax(450px,1fr)}
+.track-row.compact{min-height:40px;border-left:3px solid transparent}.track-row.compact.selected{border-left-color:var(--pink);background:#1e2330}.track-row.compact>div{padding:3px 8px;display:flex;align-items:center;gap:6px}
+.track-row.compact .track-label{justify-content:flex-start}.track-row.compact .track-label span{font-size:10px;min-width:44px}.track-row.compact canvas{width:52px;height:24px;margin:0;flex:none}
+.track-select{border:0;background:transparent;padding:2px 4px;min-height:24px;font:12px ui-monospace,SFMono-Regular,monospace;color:var(--mint)}.track-select[aria-pressed=true]{background:transparent;color:var(--pink);border:0}.track-select:hover{background:#2a3142}
+.track-buttons button{min-height:26px;min-width:26px;font-size:11px;padding:2px 6px}
+.track-row.compact .steps{height:32px;margin:0;flex:1}.track-row.compact .step{min-height:30px;font-size:11px}.track-row.compact .step span{bottom:7px}

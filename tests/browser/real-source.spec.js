@@ -4,6 +4,8 @@ import {build} from 'esbuild';
 
 const sourcePath=process.env.FFL_VERIFY_SOURCE;
 const harness=await build({entryPoints:['src/audio.js'],bundle:true,write:false,format:'iife',globalName:'audioTest',target:'es2022'});
+// These tests use every track's inline editor, which the detail view shows.
+test.beforeEach(async({page})=>{await page.addInitScript(()=>{try{localStorage.setItem('ffl:view','detail');}catch{}});});
 test('実素材の1.808秒チョップを配置に同期し、試聴・連続再生・WAVの波形を照合する',async({page})=>{
   test.skip(!sourcePath,'FFL_VERIFY_SOURCEで検証対象のローカル音源を指定');
   await page.goto('/');await page.locator('#source-file').setInputFiles(sourcePath);await expect(page.locator('#sample')).toBeEnabled();

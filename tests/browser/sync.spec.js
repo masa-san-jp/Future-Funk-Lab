@@ -1,6 +1,8 @@
 import {test,expect} from '@playwright/test';
 import {readFile} from 'node:fs/promises';
 import {encodeWav} from '../../src/core.js';
+// These tests use every track's inline editor, which the detail view shows.
+test.beforeEach(async({page})=>{await page.addInitScript(()=>{try{localStorage.setItem('ffl:view','detail');}catch{}});});
 const state=page=>page.evaluate(()=>window.futureFunkLab.getState());
 async function source(page){await page.goto('/');await page.locator('#demo').click();await expect(page.locator('#sample')).toBeEnabled();}
 test('マスターは全スクロール位置・狭い画面でも表示され、その場で操作できる',async({page})=>{

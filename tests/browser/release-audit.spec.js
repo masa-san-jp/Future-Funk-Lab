@@ -1,6 +1,8 @@
 import {test,expect} from '@playwright/test';
 import {build} from 'esbuild';
 const harness=await build({entryPoints:['src/audio.js'],bundle:true,write:false,format:'iife',globalName:'releaseAudio',target:'es2022'});
+// These tests use every track's inline editor, which the detail view shows.
+test.beforeEach(async({page})=>{await page.addInitScript(()=>{try{localStorage.setItem('ffl:view','detail');}catch{}});});
 
 test('再生準備中に停止した場合、準備完了後も停止を維持する',async({page})=>{
   await page.goto('/');await page.locator('#demo').click();await expect(page.locator('#sample')).toBeEnabled();await page.locator('#sample').click();await expect(page.locator('#seq-play')).toBeEnabled();

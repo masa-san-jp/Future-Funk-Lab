@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { build } from 'esbuild';
 const harness=await build({entryPoints:['src/audio.js'],bundle:true,write:false,format:'iife',globalName:'audioTest',target:'es2022'});
+// These tests use every track's inline editor, which the detail view shows.
+test.beforeEach(async({page})=>{await page.addInitScript(()=>{try{localStorage.setItem('ffl:view','detail');}catch{}});});
 test('長いサンプルの重ねる／切ると、前周からの音を含むループ書き出し',async({page})=>{
   await page.goto('/');await page.addScriptTag({content:harness.outputFiles[0].text});
   const result=await page.evaluate(async()=>{
