@@ -1,4 +1,4 @@
-import { dbGain, patternSeconds, stepSeconds, fadeEdges } from './core.js';
+import { dbGain, patternSeconds, triggerFrames, displaySteps, fadeEdges } from './core.js';
 export function audioBuffer(context, channels, rate) {
   const buffer=context.createBuffer(channels.length,channels[0].length,rate);
   channels.forEach((c,i)=>buffer.copyToChannel(c,i));return buffer;
@@ -44,9 +44,10 @@ export function makePartGraph(context,part,destination){
 export function activeTrack(track,tracks,count){return track.index<count && !track.mute && (!tracks.some(t=>t.index<count&&t.solo)||track.solo);}
 // Build one periodic signal. Tails crossing the bar line belong at its beginning.
 // Clip duration is independent of the eighth-note trigger grid.
-export function patternTrack(context,buffer,track,bpm,steps,{loop=true}={}){
-  const rate=context.sampleRate,period=Math.round(patternSeconds(bpm,steps)*rate),available=Math.round(buffer.duration*rate);
-  const triggers=[];for(let i=0;i<steps;i++)if(track.steps[i])triggers.push(Math.round(i*period/steps));
+// timing = {bpm, lengthTicks, resolution, swing}
+export function patternTrack(context,buffer,track,timing,{loop=true}={}){
+  const rate=context.sampleRate,period=Math.round(patternSeconds(timing.bpm,timing.lengthTicks)*rate),available=Math.round(buffer.duration*rate);
+  const triggers=triggerFrames(track,timing,period);
   const length=loop?period:Math.max(period,(triggers.at(-1)??-available)+available);
   const channels=Array.from({length:buffer.numberOfChannels},()=>new Float32Array(length));
   for(let j=0;j<triggers.length;j++){
@@ -111,17 +112,17 @@ export class AudioEngine {
   }
   refreshPatternTrack(index,prepared=null){
     if(!this.playing||!this.buffers[index]||index>=this.count)return;
-    const buffer=prepared||patternTrack(this.context,this.buffers[index],this.tracks[index],this.bpm,this.steps,{loop:this.loop});
+    const buffer=prepared||patternTrack(this.context,this.buffers[index],this.tracks[index],this.timing,{loop:this.loop});
     const when=Math.max(this.started,this.context.currentTime),elapsed=Math.max(0,when-this.started),offset=this.loop?elapsed%this.period:elapsed;
     for(const v of this.voices)if(v.pattern&&v.track===index&&!v.stopped){v.stopped=true;v.source.stop(when);}
     if(offset>=buffer.duration)return;
     const voice=this.playBuffer(buffer,this.graphs[index].input,{when,offset,loop:this.loop,track:index,origin:this.started});
     voice.pattern=true;
   }
-  start(bpm,steps,loop){
-    this.stop(false);this.bpm=bpm;this.steps=steps;this.loop=loop;this.playing=true;
-    this.period=Math.round(patternSeconds(bpm,steps)*this.context.sampleRate)/this.context.sampleRate;
-    const prepared=Array.from({length:this.count},(_,i)=>this.buffers[i]?patternTrack(this.context,this.buffers[i],this.tracks[i],bpm,steps,{loop}):null);
+  start(timing,loop){
+    this.stop(false);this.timing={...timing};this.steps=displaySteps(timing.lengthTicks,timing.resolution);this.loop=loop;this.playing=true;
+    this.period=Math.round(patternSeconds(timing.bpm,timing.lengthTicks)*this.context.sampleRate)/this.context.sampleRate;
+    const prepared=Array.from({length:this.count},(_,i)=>this.buffers[i]?patternTrack(this.context,this.buffers[i],this.tracks[i],this.timing,{loop}):null);
     this.started=this.context.currentTime+.05-this.position;
     for(let i=0;i<this.count;i++)if(prepared[i])this.refreshPatternTrack(i,prepared[i]);
     this.schedule();this.timer=setInterval(()=>this.schedule(),20);
@@ -146,15 +147,15 @@ export class AudioEngine {
   stopAll(){this.stop();this.stopPreviews();}
   meter(){if(!this.analysers)return [-Infinity,-Infinity];return this.analysers.map((a,i)=>{a.getFloatTimeDomainData(this.meterData);let max=0;for(const x of this.meterData)max=Math.max(max,Math.abs(x));const db=max>0?20*Math.log10(max):-Infinity;this.peak[i]=Math.max(this.peak[i],db);if(db>0)this.clip[i]=true;return db;});}
 }
-export async function renderPattern({tracks,buffers,count,settings,bpm,steps,masterDb,rate=44100,loop=true}){
-  const length=Math.round(patternSeconds(bpm,steps)*rate);
+export async function renderPattern({tracks,buffers,count,settings,timing,masterDb,rate=44100,loop=true}){
+  const length=Math.round(patternSeconds(timing.bpm,timing.lengthTicks)*rate);
   // Warm the crossover filters with preceding cycles, then export a complete cycle.
   const context=new OfflineAudioContext(2,length*(loop?3:1),rate);
   const master=context.createGain();master.gain.value=dbGain(masterDb);master.connect(context.destination);
   tracks.forEach((track,i)=>{
     if(!buffers[i]||!activeTrack(track,tracks,count))return;
     const graph=makeTrackGraph(context,track,settings,master),source=context.createBufferSource();
-    source.buffer=patternTrack(context,buffers[i],track,bpm,steps,{loop});source.loop=loop;source.connect(graph.input);source.start();
+    source.buffer=patternTrack(context,buffers[i],track,timing,{loop});source.loop=loop;source.connect(graph.input);source.start();
   });
   const result=await context.startRendering(),channels=[0,1].map(c=>result.getChannelData(c).slice(loop?length*2:0,loop?length*3:length));
   return loop?channels:fadeEdges(channels,rate);

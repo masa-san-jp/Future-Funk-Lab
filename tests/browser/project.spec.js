@@ -16,7 +16,7 @@ async function buildSession(page){
   await setField(page,'[data-track-pitch="1"]',5);await expect(page.locator('#status')).toContainText('長さを維持');
   await page.locator('[data-track-mode="0"]').selectOption('cut');await page.locator('[data-track-sync="2"]').selectOption('original');
   await setField(page,'[data-track-db="3"]','-6');await setField(page,'#eq-value-2-2','-12');await page.locator('#eq-slope').selectOption('24');
-  await page.locator('[data-track-mute="3"]').click();await setField(page,'#master-number','-3');
+  await page.locator('[data-track-mute="3"]').click();await setField(page,'#master-number','-3');await setField(page,'#swing',58);
   await expect(page.locator('#seq-play')).toBeEnabled();
   // Step clicks queue track rebuilds whose status messages arrive later.
   await expect.poll(async()=>(await state(page)).pendingTracks.length).toBe(0);await page.waitForTimeout(200);
@@ -33,7 +33,7 @@ test('プロジェクトを保存して開き直すと、トラックの音が�
   await page.locator('#project-file').setInputFiles({name:saved.name,mimeType:'application/octet-stream',buffer:saved.data});
   await expect(page.locator('#status')).toContainText('プロジェクトを読み込みました');await expect(page.locator('#seq-play')).toBeEnabled();
   const restored=await state(page);
-  for(const key of ['bpm','sourceBpm','count','steps','points','committed','range','bufferDurations','tracks'])expect(restored[key],key).toEqual(expected[key]);
+  for(const key of ['bpm','sourceBpm','count','steps','lengthTicks','resolution','swing','points','committed','range','bufferDurations','tracks'])expect(restored[key],key).toEqual(expected[key]);
   await expect(page.locator('[data-track-pitch="1"]')).toHaveValue('5');await expect(page.locator('#eq-slope')).toHaveValue('24');await expect(page.locator('#master-number')).toHaveValue('-3.0');
   await expect(page.locator('#project-dirty')).toHaveText('');
   expect(await bufferPrint(page)).toEqual(print);

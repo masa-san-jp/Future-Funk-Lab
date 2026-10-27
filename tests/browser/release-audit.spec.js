@@ -17,8 +17,8 @@ test('ループOFFでは後半に置いた素材が先頭で先行して鳴ら�
   const result=await page.evaluate(async()=>{
     const rate=44100,offline=new OfflineAudioContext(2,rate,rate),engine=new releaseAudio.AudioEngine();engine.context=offline;engine.master=offline.destination;
     const buffer=offline.createBuffer(2,Math.round(rate*.6),rate);for(let c=0;c<2;c++)for(let i=0;i<buffer.length;i++)buffer.getChannelData(c)[i]=.2*Math.sin(2*Math.PI*440*i/rate);
-    const track={index:0,steps:[false,false,false,true],mode:'overlap',eq:[0,0,0],volume:0,mute:false,solo:false};
-    engine.configure([track],{low:300,high:3000,slope:12},[buffer],1);engine.start(120,4,false);clearInterval(engine.timer);
+    const track={index:0,steps:[false,false,false,false,false,false,true,false],mode:'overlap',eq:[0,0,0],volume:0,mute:false,solo:false};
+    engine.configure([track],{low:300,high:3000,slope:12},[buffer],1);engine.start({bpm:120,lengthTicks:8,resolution:8,swing:50},false);clearInterval(engine.timer);
     const output=await offline.startRendering(),data=output.getChannelData(0);let earlyEnergy=0;for(let i=0;i<Math.round(rate*.3);i++)earlyEnergy+=data[i]**2;
     return {earlyRms:Math.sqrt(earlyEnergy/Math.round(rate*.3)),expectedFirstTriggerSeconds:.8};
   });
@@ -44,8 +44,8 @@ test('ループOFFへの切り替えは現在の周回位置を保ち、余韻�
   await page.goto('/');await page.addScriptTag({content:harness.outputFiles[0].text});
   const result=await page.evaluate(async()=>{
     const e=new releaseAudio.AudioEngine();await e.init();
-    const ctx=e.context,b=ctx.createBuffer(2,Math.round(.6*ctx.sampleRate),ctx.sampleRate),t={index:0,steps:[false,false,false,true],mode:'overlap',eq:[0,0,0],volume:0};b.getChannelData(0).fill(.2);b.getChannelData(1).fill(.2);
-    e.configure([t],{low:300,high:3000,slope:12},[b],1);e.start(120,4,true);
+    const ctx=e.context,b=ctx.createBuffer(2,Math.round(.6*ctx.sampleRate),ctx.sampleRate),t={index:0,steps:[false,false,false,false,false,false,true,false],mode:'overlap',eq:[0,0,0],volume:0};b.getChannelData(0).fill(.2);b.getChannelData(1).fill(.2);
+    e.configure([t],{low:300,high:3000,slope:12},[b],1);e.start({bpm:120,lengthTicks:8,resolution:8,swing:50},true);
     e.started=ctx.currentTime-3.2;e.setLoop(false);
     const v=[...e.voices].find(v=>v.pattern&&!v.stopped),answer={elapsed:ctx.currentTime-e.started,loop:v.source.loop,earlyRms:v.buffer.getChannelData(0).subarray(0,Math.round(.7*ctx.sampleRate)).some(x=>x!==0),length:v.buffer.duration};e.stopAll();await ctx.close();return answer;
   });

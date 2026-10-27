@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boundaries, snapBoundary, encodeWav, stepSeconds, patternSeconds, midChannels, detectBpm } from '../src/core.js';
+import { boundaries, snapBoundary, encodeWav, gridSeconds, patternSeconds, midChannels, detectBpm, triggerFrames, offbeatTicks, makeTrack } from '../src/core.js';
 import { transform, encodeMp3 } from '../src/dsp.js';
 const rate=44100;
 const tone=(seconds=1,freq=440)=>Float32Array.from({length:Math.round(seconds*rate)},(_,i)=>.5*Math.sin(2*Math.PI*freq*i/rate));
 function frequency(data){let crossings=0;const a=Math.floor(data.length*.25),b=Math.floor(data.length*.75);for(let i=a+1;i<b;i++)if(data[i-1]<=0&&data[i]>0)crossings++;return crossings*rate/(b-a);}
-test('8分音符グリッドと任意長サンプルは独立',()=>{assert.equal(stepSeconds(120),.25);assert.equal(patternSeconds(120,8),2);assert.equal(patternSeconds(120,16),4);assert.equal(patternSeconds(120,32),8);assert.equal(patternSeconds(60,4),2);});
+test('8分・16分グリッドと、16分単位のパターン長',()=>{assert.equal(gridSeconds(120),.25);assert.equal(gridSeconds(120,16),.125);assert.equal(patternSeconds(120,16),2);assert.equal(patternSeconds(120,32),4);assert.equal(patternSeconds(120,64),8);assert.equal(patternSeconds(60,8),2);});
 test('境界は隣接区間を越えず、グリッドが収まらない場合は保持',()=>{assert.deepEqual(boundaries(2,6,4),[2,3,4,5,6]);assert.equal(snapBoundary(.49,1,[0,.4,1],.25),.5);assert.equal(snapBoundary(2,1,[0,.4,1]),.999);assert.equal(snapBoundary(.01,1,[0,.01,.02],.25),.01);});
 test('Midは正規化し、同相L/Rで6dB増幅しない',()=>{assert.deepEqual([...midChannels([new Float32Array([1,-1]),new Float32Array([1,-1])])[0]],[1,-1]);assert.deepEqual([...midChannels([new Float32Array([1,-1]),new Float32Array([-1,1])])[0]],[0,0]);});
 test('タイムストレッチは長さを変えピッチを維持',()=>{const input=tone(2);const output=transform([input,input],rate,1.5,0);assert.equal(output[0].length,Math.round(input.length/1.5));assert.ok(Math.abs(frequency(output[0])-440)<5);assert.ok(output[0].every(Number.isFinite));});
@@ -25,10 +25,10 @@ test('任意長の音は周回境界を越えて加算され、cutは次の発�
   const {patternTrack}=await import('../src/audio.js');
   const context={sampleRate:100,createBuffer(channels,length,rate){const data=Array.from({length:channels},()=>new Float32Array(length));return {numberOfChannels:channels,length,sampleRate:rate,duration:length/rate,copyToChannel(c,i){data[i].set(c);},getChannelData(i){return data[i];}};}};
   const input=context.createBuffer(1,150,100);input.getChannelData(0).fill(1);
-  const track={steps:[false,false,false,true],mode:'overlap'};
-  const overlap=patternTrack(context,input,track,120,4).getChannelData(0);
+  const track={steps:[false,false,false,false,false,false,true,false],mode:'overlap'},timing={bpm:120,lengthTicks:8,resolution:8,swing:50};
+  const overlap=patternTrack(context,input,track,timing).getChannelData(0);
   assert.equal(overlap.length,100);assert.equal(overlap[0],2);assert.equal(overlap[30],1);assert.equal(overlap[80],2);
-  track.mode='cut';const cut=patternTrack(context,input,track,120,4).getChannelData(0);
+  track.mode='cut';const cut=patternTrack(context,input,track,timing).getChannelData(0);
   assert.equal(cut[0],1);assert.equal(cut[80],1);assert.equal(cut[74],0);
 });
 
@@ -51,13 +51,25 @@ test('選択したループの拍数から小数BPMを算出し、元音源の�
 
 
 test('複数拍の素材長を配置から求め、休符・同時発音・周回・原寸を扱う',async()=>{
-  const {makeTrack,trackSpanSteps,syncedFrames}=await import('../src/core.js');
+  // Ticks are sixteenth notes: eighth-note step s is tick 2s, and spans come back in ticks.
+  const {makeTrack,trackSpanTicks,syncedFrames}=await import('../src/core.js');
   const tracks=Array.from({length:4},(_,i)=>makeTrack(i));
-  for(const s of [0,4,8])tracks[0].steps[s]=true;tracks[3].steps[12]=true;
-  assert.equal(trackSpanSteps(tracks,0,4,16),4);assert.equal(trackSpanSteps(tracks,3,4,16),4);
-  tracks[1].steps[12]=true;assert.equal(trackSpanSteps(tracks,1,4,16),4);
-  tracks[0].sync='original';assert.equal(trackSpanSteps(tracks,0,4,16),null);
-  tracks[0].sync='fixed';tracks[0].syncSteps=7;assert.equal(trackSpanSteps(tracks,0,4,16),7);
-  const lone=[makeTrack(0)];lone[0].steps[5]=true;assert.equal(trackSpanSteps(lone,0,1,16),16);
-  for(const n of [3,5,7]){lone[0].sync='fixed';lone[0].syncSteps=n;assert.equal(syncedFrames(120,16,trackSpanSteps(lone,0,1,16),44100),n*11025);}
+  for(const s of [0,8,16])tracks[0].steps[s]=true;tracks[3].steps[24]=true;
+  assert.equal(trackSpanTicks(tracks,0,4,32),8);assert.equal(trackSpanTicks(tracks,3,4,32),8);
+  tracks[1].steps[24]=true;assert.equal(trackSpanTicks(tracks,1,4,32),8);
+  tracks[0].sync='original';assert.equal(trackSpanTicks(tracks,0,4,32),null);
+  tracks[0].sync='fixed';tracks[0].syncSteps=7;assert.equal(trackSpanTicks(tracks,0,4,32),14);
+  const lone=[makeTrack(0)];lone[0].steps[10]=true;assert.equal(trackSpanTicks(lone,0,1,32),32);
+  for(const n of [3,5,7]){lone[0].sync='fixed';lone[0].syncSteps=n;assert.equal(syncedFrames(120,32,trackSpanTicks(lone,0,1,32),44100),n*11025);}
+  const sixteenth=[makeTrack(0)];for(const t of [0,3,6])sixteenth[0].steps[t]=true;assert.equal(trackSpanTicks(sixteenth,0,1,16),3);
+});
+
+test('スウィングは選んでいるグリッドの裏のステップだけを遅らせる',()=>{
+  const track=makeTrack(0),period=44100*2;for(const t of [0,1,2,3])track.steps[t]=true;
+  // 120 BPM, 16 ticks = 2 s. A 16th step is 0.125 s; 66% puts the off-beat at 0.165 s.
+  assert.deepEqual(triggerFrames(track,{lengthTicks:16,resolution:16,swing:50},period),[0,5513,11025,16538]);
+  assert.deepEqual(triggerFrames(track,{lengthTicks:16,resolution:16,swing:66},period),[0,Math.round(.165*44100),11025,Math.round((.25+.165)*44100)]);
+  // On the eighth grid only even ticks play, and the swung step is tick 2.
+  assert.deepEqual(triggerFrames(track,{lengthTicks:16,resolution:8,swing:66},period),[0,Math.round(.33*44100)]);
+  assert.equal(offbeatTicks([track]),2);
 });
