@@ -1,6 +1,8 @@
-import { clamp, encodeWav, decodeWav, makeTrack, TICKS, PATTERN_TICKS, RESOLUTIONS } from './core.js';
-export const PROJECT_FORMAT='future-funk-lab-project', PROJECT_SCHEMA=2, PROJECT_EXTENSION='.fflab';
-const MAGIC='FFLABPRJ', CONTAINER_VERSION=1, HEADER=16, RATE=44100, MAX_SECONDS=600;
+import { clamp, crc32, makeTrack, TICKS, PATTERN_TICKS, RESOLUTIONS } from './core.js';
+// A project is settings only. The source song stays a separate file that is
+// chosen again on open and matched by size and CRC32; the demo is regenerated.
+export const PROJECT_FORMAT='future-funk-lab-project', PROJECT_SCHEMA=3, SOURCE_KINDS=['file','recording','demo'];
+const RATE=44100, MAX_SECONDS=600;
 const fail=message=>{throw Error(message);};
 const dbOut=value=>value===-Infinity?null:value;
 const number=(value,label)=>{const n=Number(value);if(value==null||value===''||!Number.isFinite(n))fail(`${label}が数値ではありません`);return n;};
@@ -15,7 +17,7 @@ const bools=(values,length)=>Array.from({length},(_,i)=>Array.isArray(values)&&v
 export function serializeProject(s,savedAt=null){
   const json={
     format:PROJECT_FORMAT,schemaVersion:PROJECT_SCHEMA,appVersion:s.appVersion,savedAt,
-    source:{name:s.sourceName,sampleRate:s.rate,frames:s.frames,bpm:s.sourceBpm,bpmNote:s.bpmNote},
+    source:{kind:s.sourceKind,name:s.sourceName,bytes:s.sourceBytes,crc32:s.sourceCrc,sampleRate:s.rate,frames:s.frames,bpm:s.sourceBpm,bpmNote:s.bpmNote},
     tempo:{bpm:s.bpm,followsSource:s.followsSource},
     sampling:{range:[...s.range],committed:s.committed?[...s.committed]:null,points:s.committed?[...s.points]:[],count:s.count,snap:s.snap,sourceLoop:s.sourceLoop,loopBeats:s.loopBeats},
     sequence:{lengthTicks:s.lengthTicks,resolution:s.resolution,swing:s.swing,loop:s.loop},
@@ -28,21 +30,15 @@ export function serializeProject(s,savedAt=null){
   if(savedAt==null)delete json.savedAt;
   return json;
 }
-// v1 stored eighth-note steps; v2 stores sixteenth-note ticks with a grid and swing.
-export function migrateProject(json){
-  if(json.schemaVersion!==1)return json;
-  const steps=[4,8,16,32].includes(json.sequence?.steps)?json.sequence.steps:16;
-  return {...json,schemaVersion:2,
-    sequence:{lengthTicks:steps*2,resolution:8,swing:50,loop:json.sequence?.loop},
-    tracks:Array.isArray(json.tracks)?json.tracks.map(t=>t&&typeof t==='object'?{...t,steps:Array.from({length:TICKS},(_,i)=>i%2===0&&Array.isArray(t.steps)&&t.steps[i/2]===true)}:t):json.tracks};
-}
 // Normalizes every value to the ranges the UI accepts. Throws before any state changes.
-export function parseProject(input){
-  if(!input||typeof input!=='object'||input.format!==PROJECT_FORMAT)fail('Future Funk Labのプロジェクトではありません');
-  if(!Number.isInteger(input.schemaVersion)||input.schemaVersion<1)fail('プロジェクトの版が不正です');
-  if(input.schemaVersion>PROJECT_SCHEMA)fail('新しい版のアプリで保存されたプロジェクトです。アプリを更新してください');
-  const json=migrateProject(input);
+export function parseProject(json){
+  if(!json||typeof json!=='object'||json.format!==PROJECT_FORMAT)fail('Future Funk Labのプロジェクトではありません');
+  if(json.schemaVersion>PROJECT_SCHEMA)fail('新しい版のアプリで保存されたプロジェクトです。アプリを更新してください');
+  if(json.schemaVersion!==PROJECT_SCHEMA)fail('対応していない版のプロジェクトです');
   const {source={},tempo={},sampling={},sequence={},eq={},master={}}=json;
+  const sourceKind=SOURCE_KINDS.includes(source.kind)?source.kind:fail('元の曲の種類が不正です');
+  const sourceBytes=sourceKind==='demo'?null:Number.isInteger(source.bytes)&&source.bytes>0?source.bytes:fail('元の曲のサイズが不正です');
+  const sourceCrc=sourceKind==='demo'?null:Number.isInteger(source.crc32)&&source.crc32>=0&&source.crc32<=0xffffffff?source.crc32:fail('元の曲の照合情報が不正です');
   if(source.sampleRate!==RATE)fail('44.1 kHz以外のプロジェクトには対応していません');
   const frames=number(source.frames,'音源の長さ');
   if(!Number.isInteger(frames)||frames<1||frames>RATE*MAX_SECONDS)fail('音源の長さが不正です');
@@ -70,7 +66,7 @@ export function parseProject(input){
   const parts=json.parts.map((p,i)=>({hp:filter(p?.hp,50,2000,200),lp:filter(p?.lp,200,8000,i?250:2000)}));
   return {
     appVersion:json.appVersion,savedAt:json.savedAt??null,
-    sourceName:typeof source.name==='string'&&source.name?source.name:'project.wav',frames,
+    sourceKind,sourceBytes,sourceCrc,sourceName:typeof source.name==='string'&&source.name?source.name:'project.wav',frames,
     sourceBpm:bounded(source.bpm,30,300,'原曲BPM'),bpmNote:typeof source.bpmNote==='string'?source.bpmNote:'',
     bpm:bounded(tempo.bpm,30,300,'グローバルBPM'),followsSource:tempo.followsSource!==false,
     range,committed,points,count,snap:sampling.snap===true,sourceLoop:sampling.sourceLoop===true,
@@ -81,30 +77,11 @@ export function parseProject(input){
     exportChannels:oneOf(json.export?.channels,[1,2],2),exportFormat:oneOf(json.export?.format,['wav','mp3'],'wav')
   };
 }
-export function packContainer(json,wav){
-  const text=new TextEncoder().encode(JSON.stringify(json)),audio=new Uint8Array(wav),out=new Uint8Array(HEADER+text.length+audio.length),v=new DataView(out.buffer);
-  out.set(new TextEncoder().encode(MAGIC),0);v.setUint32(8,CONTAINER_VERSION,true);v.setUint32(12,text.length,true);
-  out.set(text,HEADER);out.set(audio,HEADER+text.length);return out;
+// Throws unless the chosen file is the song the project was saved with; the name may differ.
+export function checkSource(project,bytes){
+  if(bytes.length!==project.sourceBytes||crc32(bytes)!==project.sourceCrc)fail(`選んだファイルは、保存したときの曲と違います。「${project.sourceName}」を選んでください`);
 }
-export function unpackContainer(buffer){
-  const bytes=new Uint8Array(buffer),v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-  if(bytes.length<HEADER||new TextDecoder().decode(bytes.subarray(0,8))!==MAGIC)fail('Future Funk Labのプロジェクトファイルではありません');
-  if(v.getUint32(8,true)!==CONTAINER_VERSION)fail('対応していないファイル形式です');
-  const length=v.getUint32(12,true);if(HEADER+length>bytes.length)fail('ファイルが途中で切れています');
-  let json;try{json=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(HEADER,HEADER+length)));}catch{fail('プロジェクト情報を読めません');}
-  return {json,wav:bytes.subarray(HEADER+length)};
-}
-// Pairs project settings with its source audio and checks that they belong together.
-export function readProject(json,wav){
-  const project=parseProject(json);
-  let decoded;try{decoded=decodeWav(wav);}catch(error){fail(`音源を読めません（${error.message}）`);}
-  if(decoded.rate!==RATE||decoded.channels.length!==2)fail('音源の形式が不正です');
-  if(decoded.channels[0].length!==project.frames)fail('音源の長さがプロジェクト情報と一致しません');
-  return {project,channels:decoded.channels};
-}
-export function readProjectFile(buffer){const {json,wav}=unpackContainer(buffer);return readProject(json,wav);}
-export const encodeSource=(channels,rate)=>encodeWav(channels,rate,{float:true});
-export function projectFileName(sourceName,bpm){
+export function projectFileName(sourceName){
   const base=(sourceName||'project').replace(/\.[^.]+$/,'').replace(/[\\/:*?"<>|]/g,'_').trim()||'project';
-  return `${base}-${bpm}bpm${PROJECT_EXTENSION}`;
+  return `${base}.json`;
 }

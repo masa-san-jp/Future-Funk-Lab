@@ -85,15 +85,13 @@ export function fadeEdges(channels,rate,ms=5) {
   for(const c of channels) for(let i=0;i<fade;i++) {const g=i/fade;c[i]*=g;c[length-1-i]*=g;}
   return channels;
 }
-export function encodeWav(channels,rate,{float=false}={}) {
-  const count=channels.length, length=channels[0].length, bytes=float?4:2, data=new ArrayBuffer(44+length*count*bytes), v=new DataView(data);
+export function encodeWav(channels,rate) {
+  const count=channels.length, length=channels[0].length, data=new ArrayBuffer(44+length*count*2), v=new DataView(data);
   const text=(offset,s)=>[...s].forEach((c,i)=>v.setUint8(offset+i,c.charCodeAt(0)));
-  text(0,'RIFF');v.setUint32(4,36+length*count*bytes,true);text(8,'WAVE');text(12,'fmt ');
-  v.setUint32(16,16,true);v.setUint16(20,float?3:1,true);v.setUint16(22,count,true);v.setUint32(24,rate,true);
-  v.setUint32(28,rate*count*bytes,true);v.setUint16(32,count*bytes,true);v.setUint16(34,bytes*8,true);text(36,'data');v.setUint32(40,length*count*bytes,true);
+  text(0,'RIFF');v.setUint32(4,36+length*count*2,true);text(8,'WAVE');text(12,'fmt ');
+  v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,count,true);v.setUint32(24,rate,true);
+  v.setUint32(28,rate*count*2,true);v.setUint16(32,count*2,true);v.setUint16(34,16,true);text(36,'data');v.setUint32(40,length*count*2,true);
   let offset=44;
-  // Float output keeps samples bit-exact for project files; PCM output clips.
-  if(float){for(let i=0;i<length;i++)for(let c=0;c<count;c++){v.setFloat32(offset,channels[c][i]||0,true);offset+=4;}return data;}
   for(let i=0;i<length;i++)for(let c=0;c<count;c++){let x=clamp(channels[c][i]||0,-1,1);v.setInt16(offset,Math.round(x*(x<0?32768:32767)),true);offset+=2;}
   return data;
 }
@@ -111,32 +109,6 @@ export function zipStore(files,date=new Date()){
   for(const e of entries){v.setUint32(offset,0x02014b50,true);v.setUint16(offset+4,20,true);common(offset+6,e);v.setUint16(offset+32,0,true);v.setUint16(offset+34,0,true);v.setUint16(offset+36,0,true);v.setUint32(offset+38,0,true);v.setUint32(offset+42,e.offset,true);out.set(e.name,offset+46);offset+=46+e.name.length;}
   v.setUint32(offset,0x06054b50,true);v.setUint16(offset+8,entries.length,true);v.setUint16(offset+10,entries.length,true);v.setUint32(offset+12,offset-directory,true);v.setUint32(offset+16,directory,true);
   return out;
-}
-// Reads PCM16 and float32 WAV without resampling, unlike decodeAudioData.
-export function decodeWav(buffer) {
-  const bytes=buffer instanceof Uint8Array?buffer:new Uint8Array(buffer),v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-  const text=(offset,n)=>String.fromCharCode(...bytes.subarray(offset,offset+n));
-  if(v.byteLength<12||text(0,4)!=='RIFF'||text(8,4)!=='WAVE')throw Error('WAVではありません');
-  let format=null,offset=12;
-  while(offset+8<=v.byteLength){
-    const id=text(offset,4),size=v.getUint32(offset+4,true),body=offset+8;
-    if(id==='fmt ')format={tag:v.getUint16(body,true),count:v.getUint16(body+2,true),rate:v.getUint32(body+4,true),bits:v.getUint16(body+14,true)};
-    else if(id==='data'){
-      if(!format)throw Error('WAVの形式情報がありません');
-      const float=format.tag===3&&format.bits===32;
-      if(!float&&!(format.tag===1&&format.bits===16))throw Error('16-bit PCMまたは32-bit floatのWAVのみ対応しています');
-      const width=format.bits/8,length=Math.floor(Math.min(size,v.byteLength-body)/(width*format.count));
-      const channels=Array.from({length:format.count},()=>new Float32Array(length));
-      let position=body;
-      for(let i=0;i<length;i++)for(let c=0;c<format.count;c++){
-        if(float)channels[c][i]=v.getFloat32(position,true);else{const x=v.getInt16(position,true);channels[c][i]=x/(x<0?32768:32767);}
-        position+=width;
-      }
-      return {channels,rate:format.rate};
-    }
-    offset=body+size+(size&1);
-  }
-  throw Error('WAVに音声データがありません');
 }
 // Energy-onset autocorrelation; confidence exposes ambiguous/non-rhythmic sources.
 export function detectBpm(channels,rate) {
