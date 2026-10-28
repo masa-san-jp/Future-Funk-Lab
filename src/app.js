@@ -17,7 +17,8 @@ worker.onerror=()=>{for(const job of workerJobs.values())job.reject(Error('音�
 function job(type,channels,extra={}){return new Promise((resolve,reject)=>{const id=++workerCounter;workerJobs.set(id,{resolve,reject});worker.postMessage({id,type,channels,rate:state.rate,...extra});});}
 function status(message,error=false){$('status').textContent=message;$('status').className=error?'error':state.busy?'busy':'';}
 function failure(error){console.error(error);status(error.message||String(error),true);}
-function guarded(fn){return (...args)=>Promise.resolve().then(()=>fn(...args)).catch(failure);}
+// Records undo history once the operation settles, whether or not it failed.
+function guarded(fn){return (...args)=>Promise.resolve().then(()=>fn(...args)).catch(failure).finally(()=>recordHistory());}
 function bind(id,event,fn){$(id).addEventListener(event,guarded(fn));}
 function refreshAvailability(){document.querySelectorAll('[data-needs-source]').forEach(e=>e.disabled=!state.channels||state.busy);document.querySelectorAll('[data-needs-chop]').forEach(e=>e.disabled=!state.committed||state.busy);document.querySelectorAll('[data-part-play],[data-part-export]').forEach(e=>e.disabled=!state.channels||state.busy);document.querySelectorAll('[data-track-play],.chop-pad').forEach(e=>e.disabled=!state.committed||state.busy||Number(e.dataset.trackPlay??e.dataset.pad)>=state.count);$('chop-count').disabled=state.busy||!state.committed;$('global-bpm').disabled=state.busy;$('source-bpm').disabled=state.busy;$('source-file').disabled=state.busy||state.recording;$('demo').disabled=state.busy||state.recording;$('record').disabled=state.busy||state.recording;$('record-stop').disabled=!state.recording;$('record-save').disabled=!state.recorded;$('project-open').disabled=state.busy||state.recording;$('autosave-restore').disabled=state.busy||state.recording;$('autosave-discard').disabled=state.busy;$('project-source-pick').disabled=state.busy||state.recording;}
 function busy(value){state.busy=value;refreshAvailability();}
@@ -71,7 +72,7 @@ function drawSource(){sourceWave.set(state.channels,state.rate,state.range.map(t
 function drawParts(){const channels=state.channels?midChannels(state.channels):null;state.mid=channels;partWaves.forEach(w=>w.set(channels,state.rate));state.parts.forEach((_,i)=>$(`part-time-${i}`).textContent=`0:00.000 / ${formatTime(duration())}`);}
 function resetSource(){
   clearTimeout(boundaryTimer);boundaryTimer=null;pitchTimers.forEach(clearTimeout);stopSequence();sourceSeekVersion++;sourcePlayhead=0;sourceAudioBuffer=null;tempoFollowsSource=true;loopBeatsOverride=null;state.generation++;state.pitchEpoch=(state.pitchEpoch||0)+1;state.original=null;state.channels=null;state.committed=null;state.mid=null;state.buffers=[];state.points=[];state.range=[0,1];state.recorded=null;state.sourceName='';state.sourceFile=null;state.tracks=Array.from({length:8},(_,i)=>makeTrack(i));engine.graphs?.forEach(g=>g.dispose());engine.graphs=null;state.partGraphs.forEach(g=>g.dispose());state.partGraphs=[];
-  $('source-name').textContent='音源が選択されていません';$('record-name').textContent='未録音';$('source-file').value='';setSourceTool('select');sourceWave.zoom=1;sourceWave.scroll=0;$('zoom').value=1;$('zoom-value').textContent='×1';$('wave-scroll').value=0;$('wave-scroll').max=0;$('wave-scroll').disabled=true;drawSource();drawParts();chopWave.set(null,state.rate);chopWave.points=[];$('chop-pads').replaceChildren();$('chop-info').textContent='サンプリング範囲を確定してください';renderTracks();refreshAvailability();
+  $('source-name').textContent='音源が選択されていません';$('record-name').textContent='未録音';$('source-file').value='';setSourceTool('select');sourceWave.zoom=1;sourceWave.scroll=0;$('zoom').value=1;$('zoom-value').textContent='×1';$('wave-scroll').value=0;$('wave-scroll').max=0;$('wave-scroll').disabled=true;drawSource();drawParts();chopWave.set(null,state.rate);chopWave.points=[];$('chop-pads').replaceChildren();$('chop-info').textContent='サンプリング範囲を確定してください';renderTracks();refreshAvailability();resetHistory();
 }
 async function setSource(channels,name,{recorded=false,knownBpm=null,file}={}){
   resetSource();const generation=state.generation;busy(true);status('音源のBPMを解析しています…');
@@ -81,7 +82,7 @@ async function setSource(channels,name,{recorded=false,knownBpm=null,file}={}){
     const detected=knownBpm?{bpm:knownBpm,confidence:1}:await job('detect',state.original);
     if(generation!==state.generation)return;
     state.sourceBpm=detected.bpm;state.bpm=detected.bpm;tempoFollowsSource=true;$('source-bpm').value=state.sourceBpm;$('global-bpm').value=state.bpm;$('sequence-bpm').textContent=state.bpm;$('bpm-confidence').textContent=knownBpm?'既知のBPM':detected.confidence<.15?'推定値・必要に応じて修正':'推定値・ループの拍数から補正可';
-    if(await rebuildSource())markClean();
+    if(await rebuildSource()){markClean();resetHistory();}
   } finally {if(generation===state.generation)busy(false);}
 }
 // Project reopening relies on decoding a file exactly as it was first loaded.
@@ -464,17 +465,89 @@ function syncControlsFromState(project){
   document.querySelectorAll('[data-filter]').forEach(input=>{const filter=state.parts[Number(input.dataset.part)][input.dataset.filter];if(input.dataset.param==='on')input.checked=filter.on;else input.value=filter[input.dataset.param];});
   updatePatternLength();
 }
+// Puts saved settings into the state and controls; callers rebuild what depends on them.
+function assignSettings(project){
+  state.sourceBpm=project.sourceBpm;state.bpm=project.bpm;tempoFollowsSource=project.followsSource;loopBeatsOverride=project.loopBeats;
+  Object.assign(state,{range:[...project.range],committed:project.committed&&[...project.committed],points:[...project.points],count:project.count,snap:project.snap,sourceLoop:project.sourceLoop,lengthTicks:project.lengthTicks,resolution:project.resolution,swing:project.swing,loop:project.loop,settings:{...project.settings},tracks:project.tracks});
+  project.parts.forEach((part,i)=>{state.parts[i].hp={...part.hp};state.parts[i].lp={...part.lp};});
+  if(state.selectedTrack>=state.count)state.selectedTrack=0;
+  engine.setMaster(project.masterDb);syncControlsFromState(project);
+}
+// Undo history holds the saved settings, so what can be undone is what a project saves.
+// Export settings are left out; loading, opening, restoring or deleting a source starts over.
+const HISTORY_LIMIT=100;
+let undoStack=[],historyIndex=-1,historyAction=0,applyingHistory=false;
+function historySnapshot(){const json=serializeProject(projectState());return {json,key:JSON.stringify({...json,export:null})};}
+function updateHistoryButtons(){$('undo').disabled=historyIndex<=0;$('redo').disabled=historyIndex<0||historyIndex>=undoStack.length-1;}
+function resetHistory(){undoStack=state.original&&state.sourceFile?[{...historySnapshot(),source:null,action:-1,time:0}]:[];historyIndex=undoStack.length-1;updateHistoryButtons();}
+// Adds the current settings if they changed. A change from the same operation, or a quick
+// series on one slider or waveform, replaces the last entry so one undo takes it back.
+function recordHistory(source=null,merge=false){
+  if(applyingHistory||historyIndex<0||!state.original||!state.sourceFile)return;
+  const snapshot=historySnapshot(),top=undoStack[historyIndex],now=performance.now();if(snapshot.key===top.key)return;
+  undoStack.length=historyIndex+1;
+  const entry={...snapshot,source,action:historyAction,time:now};
+  if(historyIndex>0&&(top.action===historyAction||merge&&source&&top.source===source&&now-top.time<1000)){
+    if(undoStack[historyIndex-1].key===snapshot.key){undoStack.pop();historyIndex--;}else undoStack[historyIndex]=entry;
+  }else{undoStack.push(entry);if(undoStack.length>HISTORY_LIMIT+1)undoStack.shift();historyIndex=undoStack.length-1;}
+  updateHistoryButtons();
+}
+const historySource=element=>{while(element&&!element.id&&![...element.attributes].some(a=>a.name.startsWith('data-')))element=element.parentElement;return element?element.id||[...element.attributes].filter(a=>a.name.startsWith('data-')).map(a=>`${a.name}=${a.value}`).join(' '):null;};
+function recordAfter(event,merge){historyAction++;const source=historySource(event.target instanceof Element?event.target:null);setTimeout(()=>recordHistory(source,merge),0);}
+document.addEventListener('input',event=>recordAfter(event,true));
+document.addEventListener('change',event=>recordAfter(event,false));
+document.addEventListener('click',event=>recordAfter(event,false));
+document.addEventListener('pointerup',event=>recordAfter(event,event.target?.tagName==='CANVAS'));
+document.addEventListener('keyup',event=>recordAfter(event,event.target?.tagName==='CANVAS'));
+function clearChops(){
+  stopSequence();state.pitchEpoch=(state.pitchEpoch||0)+1;pitchTimers.forEach(clearTimeout);state.buffers=[];engine.buffers=state.buffers;
+  chopWave.set(null,state.rate);chopWave.points=[];$('chop-pads').replaceChildren();$('chop-info').textContent='サンプリング範囲を確定してください';renderTracks();refreshAvailability();
+}
+// Rebuilds only what the changed settings need, as the original operation would have.
+async function applyHistory(project){
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),before=structuredClone({bpm:state.bpm,sourceBpm:state.sourceBpm,committed:state.committed,points:state.points,count:state.count,lengthTicks:state.lengthTicks,resolution:state.resolution,settings:state.settings,parts:state.parts.map(p=>[p.hp,p.lp]),loop:state.loop});
+  assignSettings(project);drawSource();
+  if(!same(before.parts,state.parts.map(p=>[p.hp,p.lp])))state.parts.forEach((_,i)=>refreshPartGraph(i));
+  if(before.bpm!==state.bpm||before.sourceBpm!==state.sourceBpm){if(!state.committed)clearChops();await rebuildSource();return;}
+  if(!same(before.committed,state.committed)||!same(before.points,state.points)||before.count!==state.count){
+    if(!state.committed)return clearChops();
+    busy(true);try{await rebuildChops();}finally{busy(false);}return;
+  }
+  if(before.lengthTicks!==state.lengthTicks||before.resolution!==state.resolution)engine.stop();
+  engine.configure(state.tracks,state.settings,state.buffers,state.count);if(!same(before.settings,state.settings))engine.rebuildEQ();
+  engine.setLoop(state.loop);queueSync();drawChops();renderTracks();
+  if(engine.playing){engine.timing=timing();for(let i=0;i<state.count;i++)engine.refreshPatternTrack(i);}
+}
+async function stepHistory(delta){
+  const target=historyIndex+delta;if(historyIndex<0||target<0||target>=undoStack.length)return;
+  if(state.busy)throw Error(delta<0?'処理中は元に戻せません':'処理中はやり直せません');
+  await flushBoundary();
+  const project=parseProject(undoStack[target].json);project.exportChannels=Number($('export-channels').value);project.exportFormat=$('export-format').value;
+  historyIndex=target;applyingHistory=true;
+  try{await applyHistory(project);}finally{applyingHistory=false;}
+  undoStack[target]={...history[target],...historySnapshot()};updateHistoryButtons();updateDirty();
+  status(delta<0?`元に戻しました（あと ${historyIndex} 回戻せます）`:`やり直しました（あと ${undoStack.length-1-historyIndex} 回やり直せます）`);
+}
+bind('undo','click',()=>stepHistory(-1));bind('redo','click',()=>stepHistory(1));
+// While a field is being typed in, ⌘Z undoes the typing as usual; otherwise it undoes the app.
+let editedField=null;
+document.addEventListener('focusin',()=>{editedField=null;});
+document.addEventListener('input',event=>{if(typesText(event.target))editedField=event.target;},true);
+document.addEventListener('change',()=>{editedField=null;},true);
+document.addEventListener('keydown',event=>{
+  if(!(event.metaKey||event.ctrlKey)||event.altKey)return;
+  const key=event.key.toLowerCase(),undo=key==='z'&&!event.shiftKey,redo=key==='z'&&event.shiftKey||key==='y'&&event.ctrlKey&&!event.metaKey&&!event.shiftKey;
+  if(!undo&&!redo||editedField&&editedField===event.target)return;
+  event.preventDefault();guarded(()=>stepHistory(undo?-1:1))();
+});
 async function restoreProject(project,channels,sourceFile){
   if(channels[0].length!==project.frames)throw Error('元の曲の長さがプロジェクトと一致しません');
   await initAudio();resetSource();hideAutosaveBanner();hideSourcePrompt();busy(true);status('プロジェクトを読み込んでいます…');
   try{
     state.original=channels;state.sourceFile=sourceFile;state.sourceName=sourceFile.name;$('source-name').textContent=sourceFile.name;markSourceChanged();
-    state.sourceBpm=project.sourceBpm;state.bpm=project.bpm;tempoFollowsSource=project.followsSource;loopBeatsOverride=project.loopBeats;
-    Object.assign(state,{range:[...project.range],committed:project.committed&&[...project.committed],points:[...project.points],count:project.count,snap:project.snap,sourceLoop:project.sourceLoop,lengthTicks:project.lengthTicks,resolution:project.resolution,swing:project.swing,loop:project.loop,settings:{...project.settings},tracks:project.tracks});
-    project.parts.forEach((part,i)=>{state.parts[i].hp={...part.hp};state.parts[i].lp={...part.lp};});
-    engine.setMaster(project.masterDb);syncControlsFromState(project);
+    assignSettings(project);
     // rebuildSource also rebuilds every chop because committed is already set.
-    await rebuildSource();if(!state.committed)renderTracks();markClean();
+    await rebuildSource();if(!state.committed)renderTracks();markClean();resetHistory();
     status(`プロジェクトを読み込みました · ${sourceFile.name} · ${state.bpm} BPM`);
   }finally{busy(false);}
 }
@@ -733,4 +806,4 @@ function animate(time){
 }requestAnimationFrame(animate);
 window.addEventListener('pagehide',()=>{recordStream?.getTracks().forEach(t=>t.stop());engine.stopAll();worker.terminate();});
 // Read-only diagnostics for integration checks; no audio data leaves this page.
-window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:steps(),lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks),view:trackView,selectedTrack:state.selectedTrack}),engine};
+window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:steps(),lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks),view:trackView,selectedTrack:state.selectedTrack,history:{undo:Math.max(0,historyIndex),redo:Math.max(0,undoStack.length-1-historyIndex)}}),engine};

@@ -10,7 +10,7 @@ test('スペースでシーケンサーを再生し、もう一度で止める',
   await chopped(page);await page.locator('body').click({position:{x:5,y:5}});
   await page.keyboard.press('Space');await playing(page).toBe(true);
   await page.keyboard.press('Space');await playing(page).toBe(false);
-  await expect(page.locator('#shortcut-hint')).toHaveText('Space：再生/停止 ／ ⌘S：保存');await expect(page.locator('#seq-play')).toHaveAttribute('title','Space');
+  await expect(page.locator('#shortcut-hint')).toHaveText('Space：再生/停止 ／ ⌘Z：元に戻す ／ ⇧⌘Z：やり直す ／ ⌘S：保存');await expect(page.locator('#seq-play')).toHaveAttribute('title','Space');
 });
 test('ステップを押した直後のスペースは、ステップを切り替えずに再生する',async({page})=>{
   await chopped(page);const step=page.locator('[data-track-step="0"][data-step="2"]');
