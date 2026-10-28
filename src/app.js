@@ -81,7 +81,7 @@ async function setSource(channels,name,{recorded=false,knownBpm=null,file}={}){
     const detected=knownBpm?{bpm:knownBpm,confidence:1}:await job('detect',state.original);
     if(generation!==state.generation)return;
     state.sourceBpm=detected.bpm;state.bpm=detected.bpm;tempoFollowsSource=true;$('source-bpm').value=state.sourceBpm;$('global-bpm').value=state.bpm;$('sequence-bpm').textContent=state.bpm;$('bpm-confidence').textContent=knownBpm?'既知のBPM':detected.confidence<.15?'推定値・必要に応じて修正':'推定値・ループの拍数から補正可';
-    await rebuildSource();
+    if(await rebuildSource())markClean();
   } finally {if(generation===state.generation)busy(false);}
 }
 // Project reopening relies on decoding a file exactly as it was first loaded.
@@ -103,11 +103,12 @@ async function rebuildSource(){
   if(!state.original)return;clearTimeout(boundaryTimer);const generation=++state.generation;busy(true);stopSequence();status('BPMを変換しています…');
   try{
     if(state.original[0].length/state.rate*state.sourceBpm/state.bpm>600)throw Error('BPM変換後の音源が10分を超えます。BPMを上げるか、短い音源を選択してください');
-    const channels=await job('transform',state.original,{tempo:state.bpm/state.sourceBpm,pitch:0});if(generation!==state.generation)return;
+    const channels=await job('transform',state.original,{tempo:state.bpm/state.sourceBpm,pitch:0});if(generation!==state.generation)return false;
     const relative=duration()?sourcePlayhead/duration():0;state.channels=channels;sourceAudioBuffer=null;sourcePlayhead=relative*duration();drawSource();drawParts();
     state.partGraphs.forEach(g=>g.dispose());state.partGraphs=[];
     if(state.committed)await rebuildChops();
     status(`音源を読み込みました · ${state.sourceBpm} → ${state.bpm} BPM · ${formatTime(duration())}`);
+    return generation===state.generation;
   }finally{if(generation===state.generation)busy(false);}
 }
 const pitchTimers=Array(8),pitchVersions=Array(8).fill(0);
@@ -420,13 +421,28 @@ async function exportSequence(){
 // A project file holds settings only; the source song is chosen again on open.
 // Autosave keeps the source file itself in the browser, unconverted.
 const appVersion=typeof APP_VERSION==='string'?APP_VERSION:'dev';
-let autosaveAudioId=0,autosaveWrittenAudio=0,autosaveJson='',autosaveBusy=false,autosaveFailed=false,lastFileJson=null,pendingProject=null;
+let autosaveAudioId=0,autosaveWrittenAudio=0,autosaveJson='',autosaveBusy=false,autosaveFailed=false,lastFileJson=null,pendingProject=null,cleanJson=null;
 function markSourceChanged(){autosaveAudioId++;}
 function projectState(){
   const file=state.sourceFile;
   return {appVersion,sourceKind:file.kind,sourceName:file.name,sourceBytes:file.bytes,sourceCrc:file.crc,rate:state.rate,frames:state.original[0].length,sourceBpm:state.sourceBpm,bpmNote:$('bpm-confidence').textContent,bpm:state.bpm,followsSource:tempoFollowsSource,range:state.range,committed:state.committed,points:state.points,count:state.count,snap:state.snap,sourceLoop:state.sourceLoop,loopBeats:loopBeatsOverride,lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,loop:state.loop,settings:state.settings,tracks:state.tracks,parts:state.parts,masterDb:engine.masterDb,exportChannels:Number($('export-channels').value),exportFormat:$('export-format').value};
 }
 function projectJson(){return state.original&&state.sourceFile?JSON.stringify(serializeProject(projectState())):null;}
+// Settings when the work was last loaded, opened, restored or saved; replacing asks first if they changed.
+function markClean(){cleanJson=projectJson();}
+const hasUnsavedWork=()=>!!state.original&&projectJson()!==cleanJson;
+let replaceAnswer=null;
+function answerReplace(value){$('replace-confirm').classList.add('hidden');const answer=replaceAnswer;replaceAnswer=null;answer?.(value);}
+// Resolves true when the current work may be replaced. Never uses window.confirm, which blocks the page.
+async function confirmReplace(){
+  if(!hasUnsavedWork())return true;
+  answerReplace(false);$('replace-confirm').classList.remove('hidden');$('replace-yes').focus();status('今の作業には未保存の変更があります。置き換えるか選んでください');
+  const answer=await new Promise(resolve=>replaceAnswer=resolve);
+  if(answer==='save')saveProject();
+  if(!answer)status('置き換えをやめました');
+  return !!answer;
+}
+$('replace-save').addEventListener('click',()=>answerReplace('save'));$('replace-yes').addEventListener('click',()=>answerReplace('replace'));$('replace-no').addEventListener('click',()=>answerReplace(false));
 function updateDirty(json=projectJson()){$('project-dirty').textContent=json&&json!==lastFileJson?'未保存の変更あり':'';}
 function saveProject(){
   if(!state.original||!state.sourceFile||state.busy)return;
@@ -434,7 +450,7 @@ function saveProject(){
   download(JSON.stringify(serializeProject(projectState(),new Date().toISOString()),null,2),name,'application/json');
   // A recording exists only in this page, so its original bytes are saved beside the project.
   if(file.kind==='recording')download(file.blob,file.name,file.blob.type);
-  lastFileJson=projectJson();updateDirty(lastFileJson);
+  lastFileJson=projectJson();cleanJson=lastFileJson;updateDirty(lastFileJson);
   status(file.kind==='recording'?`プロジェクトを保存しました · ${name} と録音 ${file.name}（2つを同じ場所に置いてください）`:`プロジェクトを保存しました · ${name}`);
 }
 function syncControlsFromState(project){
@@ -458,7 +474,7 @@ async function restoreProject(project,channels,sourceFile){
     project.parts.forEach((part,i)=>{state.parts[i].hp={...part.hp};state.parts[i].lp={...part.lp};});
     engine.setMaster(project.masterDb);syncControlsFromState(project);
     // rebuildSource also rebuilds every chop because committed is already set.
-    await rebuildSource();if(!state.committed)renderTracks();
+    await rebuildSource();if(!state.committed)renderTracks();markClean();
     status(`プロジェクトを読み込みました · ${sourceFile.name} · ${state.bpm} BPM`);
   }finally{busy(false);}
 }
@@ -476,6 +492,7 @@ async function openProject(files){
   if(!jsonFile)throw Error('プロジェクトファイル（.json）を選んでください');
   let project;try{project=parseProject(JSON.parse(await jsonFile.text()));}catch(error){throw Error(`プロジェクトを読み込めませんでした：${error.message}`);}
   const audio=files.find(f=>f!==jsonFile);
+  if(!await confirmReplace())return;
   if(project.sourceKind!=='demo'&&!audio){
     pendingProject=project;$('project-source-text').textContent=`元の曲「${project.sourceName}」を選んでください`;$('project-source').classList.remove('hidden');
     status(`プロジェクトを開くには、元の曲「${project.sourceName}」を選んでください`);return;
@@ -532,7 +549,29 @@ bind('project-source-file','change',async event=>{
 bind('project-source-cancel','click',()=>{hideSourcePrompt();status('プロジェクトを開くのをやめました');});
 document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='s'){event.preventDefault();guarded(saveProject)();}});
 
-bind('source-file','change',event=>loadFile(event.target.files[0]));
+async function chooseSource(file){if(file&&await confirmReplace())await loadFile(file);}
+bind('source-file','change',async event=>{const file=event.target.files[0];$('source-file').value='';await chooseSource(file);});
+// Dropping files anywhere does what choosing them in the pickers does.
+const isProjectFile=f=>/\.json$/i.test(f.name)||f.type==='application/json';
+const isAudioFile=f=>f.type.startsWith('audio/')||/\.(wav|aif|aiff|aifc|mp3|m4a|aac|flac|ogg|opus|webm)$/i.test(f.name);
+async function dropFiles(files){
+  if(state.recording)throw Error('録音中は読み込めません。録音を停止してからドロップしてください');
+  if(state.busy)throw Error('処理中は読み込めません。終わってからドロップしてください');
+  const projects=files.filter(isProjectFile),songs=files.filter(f=>!isProjectFile(f)&&isAudioFile(f));
+  if(projects.length+songs.length!==files.length||!files.length)throw Error('曲かプロジェクト（.json）をドロップしてください');
+  if(projects.length>1)throw Error('プロジェクト（.json）は1つずつドロップしてください');
+  if(songs.length>1)throw Error('曲は1つずつドロップしてください');
+  if(projects.length)return openProject(files);
+  if(pendingProject){await restoreWithSource(pendingProject,songs[0]);lastFileJson=projectJson();updateDirty(lastFileJson);return;}
+  await chooseSource(songs[0]);
+}
+let dragDepth=0;
+const carriesFiles=event=>[...(event.dataTransfer?.types||[])].includes('Files');
+const hideDrop=()=>{dragDepth=0;$('drop-overlay').classList.add('hidden');};
+document.addEventListener('dragenter',event=>{if(!carriesFiles(event))return;event.preventDefault();dragDepth++;$('drop-overlay').classList.remove('hidden');});
+document.addEventListener('dragover',event=>{if(!carriesFiles(event))return;event.preventDefault();event.dataTransfer.dropEffect='copy';});
+document.addEventListener('dragleave',event=>{if(!carriesFiles(event))return;if(--dragDepth<=0)hideDrop();});
+document.addEventListener('drop',event=>{if(!carriesFiles(event))return;event.preventDefault();hideDrop();guarded(dropFiles)([...event.dataTransfer.files]);});
 bind('source-delete','click',async()=>{resetSource();await discardAutosave();status('音源と関連するチョップ・パターンを削除しました');});
 bind('source-play','click',toggleSource);$('source-play').dataset.preview='source';
 bind('source-range-play','click',()=>engine.preview.get('source')?.sourceMode==='range'?stopSource():playSourceAt(0,'range'));$('source-range-play').dataset.preview='source';
@@ -644,6 +683,7 @@ bind('clip-reset','click',()=>{engine.clip=[false,false];engine.peak=[-Infinity,
 let recorder,recordStream,recordChunks=[];
 bind('record','click',async()=>{
   if(!navigator.mediaDevices?.getUserMedia)throw Error('マイク録音にはlocalhostまたはHTTPSと、対応ブラウザが必要です');
+  if(!await confirmReplace())return;
   await initAudio();engine.stopAll();
   try{
     recordStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
@@ -666,6 +706,7 @@ function demoChannels(rate){
   return channels;
 }
 bind('demo','click',async()=>{
+  if(!await confirmReplace())return;
   await initAudio();const name='Future Funk Lab · Demo 120 BPM.wav';
   await setSource(demoChannels(state.rate),name,{knownBpm:120,file:{kind:'demo',name,blob:null,bytes:null,crc:null}});
 });
