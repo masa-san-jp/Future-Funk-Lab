@@ -86,7 +86,7 @@ test('実ファイルは原曲BPM・原速で読み込み、波形クリック�
   await page.locator('#source-bpm').fill('100');await page.locator('#source-bpm').press('Tab');await expect(page.locator('#sample')).toBeEnabled();expect((await state(page)).bpm).toBe(100);expect((await state(page)).duration).toBe(8);
   await page.locator('#global-bpm').fill('120');await page.locator('#global-bpm').press('Tab');await expect(page.locator('#sample')).toBeEnabled();expect((await state(page)).duration).toBeCloseTo(8*100/120,4);
   await page.locator('#source-bpm').fill('110');await page.locator('#source-bpm').press('Tab');await expect(page.locator('#sample')).toBeEnabled();expect((await state(page)).bpm).toBe(120);expect((await state(page)).duration).toBeCloseTo(8*110/120,4);
-  await page.locator('#source-file').setInputFiles(file(150));await expect(page.locator('#sample')).toBeEnabled();const replaced=await state(page);expect(replaced.bpm).toBe(replaced.sourceBpm);expect(replaced.sourceBpm).toBeGreaterThanOrEqual(149);expect(replaced.sourceBpm).toBeLessThanOrEqual(151);expect(replaced.duration).toBe(8);
+  await page.locator('#source-file').setInputFiles(file(150));await page.locator('#replace-yes').click();await expect(page.locator('#sample')).toBeEnabled();const replaced=await state(page);expect(replaced.bpm).toBe(replaced.sourceBpm);expect(replaced.sourceBpm).toBeGreaterThanOrEqual(149);expect(replaced.sourceBpm).toBeLessThanOrEqual(151);expect(replaced.duration).toBe(8);
 });
 
 test('小さな手ぶれを含むクリックと通常のclickイベントで原曲を再生できる',async({page})=>{
