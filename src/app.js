@@ -1,13 +1,13 @@
 import './style.css';
-import { clamp, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, zipStore, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, gridSeconds, trackSpanTicks, syncedFrames, displaySteps, ticksPerStep, offbeatTicks, PATTERN_TICKS } from './core.js';
+import { clamp, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, zipStore, crc32, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, gridSeconds, trackSpanTicks, syncedFrames, displaySteps, ticksPerStep, offbeatTicks, PATTERN_TICKS } from './core.js';
 import { AudioEngine, audioBuffer, makePartGraph, renderPattern, renderPart, activeTrack } from './audio.js';
 import { Waveform } from './waveform.js';
-import { serializeProject, readProject, readProjectFile, packContainer, encodeSource, projectFileName } from './project.js';
+import { serializeProject, parseProject, checkSource, projectFileName } from './project.js';
 import { autosave } from './autosave.js';
 const $=id=>document.getElementById(id);
 const steps=()=>displaySteps(state.lengthTicks,state.resolution);
 const timing=()=>({bpm:state.bpm,lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing});
-const state={bpm:120,sourceBpm:120,rate:44100,original:null,channels:null,range:[0,1],committed:null,points:[],count:4,lengthTicks:32,resolution:8,swing:50,snap:false,loop:true,sourceLoop:false,tracks:Array.from({length:8},(_,i)=>makeTrack(i)),settings:{low:300,high:3000,slope:12},buffers:[],parts:[{name:'ボーカル',key:'vocal',hp:{on:true,freq:200,slope:12},lp:{on:false,freq:2000,slope:12}},{name:'ベース',key:'bass',hp:{on:false,freq:200,slope:12},lp:{on:true,freq:250,slope:12}}],partGraphs:[],busy:false,generation:0,recorded:null,recording:false,sourceName:'',selectedTrack:0};
+const state={bpm:120,sourceBpm:120,rate:44100,original:null,channels:null,range:[0,1],committed:null,points:[],count:4,lengthTicks:32,resolution:8,swing:50,snap:false,loop:true,sourceLoop:false,tracks:Array.from({length:8},(_,i)=>makeTrack(i)),settings:{low:300,high:3000,slope:12},buffers:[],parts:[{name:'ボーカル',key:'vocal',hp:{on:true,freq:200,slope:12},lp:{on:false,freq:2000,slope:12}},{name:'ベース',key:'bass',hp:{on:false,freq:200,slope:12},lp:{on:true,freq:250,slope:12}}],partGraphs:[],busy:false,generation:0,recorded:null,recording:false,sourceName:'',sourceFile:null,selectedTrack:0};
 let sourcePlayhead=0,sourceAudioBuffer=null,sourceSeekVersion=0,tempoFollowsSource=true,endpointMenuTime=0,padPlaybackVersion=0,loopBeatsOverride=null;
 let workerCounter=0,workerJobs=new Map();
 const workerUrl=URL.createObjectURL(new Blob([WORKER_SOURCE],{type:'text/javascript'}));
@@ -19,7 +19,7 @@ function status(message,error=false){$('status').textContent=message;$('status')
 function failure(error){console.error(error);status(error.message||String(error),true);}
 function guarded(fn){return (...args)=>Promise.resolve().then(()=>fn(...args)).catch(failure);}
 function bind(id,event,fn){$(id).addEventListener(event,guarded(fn));}
-function refreshAvailability(){document.querySelectorAll('[data-needs-source]').forEach(e=>e.disabled=!state.channels||state.busy);document.querySelectorAll('[data-needs-chop]').forEach(e=>e.disabled=!state.committed||state.busy);document.querySelectorAll('[data-part-play],[data-part-export]').forEach(e=>e.disabled=!state.channels||state.busy);document.querySelectorAll('[data-track-play],.chop-pad').forEach(e=>e.disabled=!state.committed||state.busy||Number(e.dataset.trackPlay??e.dataset.pad)>=state.count);$('chop-count').disabled=state.busy||!state.committed;$('global-bpm').disabled=state.busy;$('source-bpm').disabled=state.busy;$('source-file').disabled=state.busy||state.recording;$('demo').disabled=state.busy||state.recording;$('record').disabled=state.busy||state.recording;$('record-stop').disabled=!state.recording;$('record-save').disabled=!state.recorded;$('project-open').disabled=state.busy||state.recording;$('autosave-restore').disabled=state.busy||state.recording;$('autosave-discard').disabled=state.busy;}
+function refreshAvailability(){document.querySelectorAll('[data-needs-source]').forEach(e=>e.disabled=!state.channels||state.busy);document.querySelectorAll('[data-needs-chop]').forEach(e=>e.disabled=!state.committed||state.busy);document.querySelectorAll('[data-part-play],[data-part-export]').forEach(e=>e.disabled=!state.channels||state.busy);document.querySelectorAll('[data-track-play],.chop-pad').forEach(e=>e.disabled=!state.committed||state.busy||Number(e.dataset.trackPlay??e.dataset.pad)>=state.count);$('chop-count').disabled=state.busy||!state.committed;$('global-bpm').disabled=state.busy;$('source-bpm').disabled=state.busy;$('source-file').disabled=state.busy||state.recording;$('demo').disabled=state.busy||state.recording;$('record').disabled=state.busy||state.recording;$('record-stop').disabled=!state.recording;$('record-save').disabled=!state.recorded;$('project-open').disabled=state.busy||state.recording;$('autosave-restore').disabled=state.busy||state.recording;$('autosave-discard').disabled=state.busy;$('project-source-pick').disabled=state.busy||state.recording;}
 function busy(value){state.busy=value;refreshAvailability();}
 function numeric(id,min,max,fn){bind(id,'change',()=>{const value=Number($(id).value);if(!Number.isFinite(value)||$(id).value==='')throw Error('数値を入力してください');const next=clamp(value,min,max);$(id).value=next;return fn(next);});}
 function download(data,name,type){const blob=data instanceof Blob?data:new Blob([data],{type});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);}
@@ -70,13 +70,13 @@ async function toggleSource(){
 function drawSource(){sourceWave.set(state.channels,state.rate,state.range.map(t=>t*duration()));updateRangeFields();updateSourceCursor();}
 function drawParts(){const channels=state.channels?midChannels(state.channels):null;state.mid=channels;partWaves.forEach(w=>w.set(channels,state.rate));state.parts.forEach((_,i)=>$(`part-time-${i}`).textContent=`0:00.000 / ${formatTime(duration())}`);}
 function resetSource(){
-  clearTimeout(boundaryTimer);boundaryTimer=null;pitchTimers.forEach(clearTimeout);stopSequence();sourceSeekVersion++;sourcePlayhead=0;sourceAudioBuffer=null;tempoFollowsSource=true;loopBeatsOverride=null;state.generation++;state.pitchEpoch=(state.pitchEpoch||0)+1;state.original=null;state.channels=null;state.committed=null;state.mid=null;state.buffers=[];state.points=[];state.range=[0,1];state.recorded=null;state.sourceName='';state.tracks=Array.from({length:8},(_,i)=>makeTrack(i));engine.graphs?.forEach(g=>g.dispose());engine.graphs=null;state.partGraphs.forEach(g=>g.dispose());state.partGraphs=[];
+  clearTimeout(boundaryTimer);boundaryTimer=null;pitchTimers.forEach(clearTimeout);stopSequence();sourceSeekVersion++;sourcePlayhead=0;sourceAudioBuffer=null;tempoFollowsSource=true;loopBeatsOverride=null;state.generation++;state.pitchEpoch=(state.pitchEpoch||0)+1;state.original=null;state.channels=null;state.committed=null;state.mid=null;state.buffers=[];state.points=[];state.range=[0,1];state.recorded=null;state.sourceName='';state.sourceFile=null;state.tracks=Array.from({length:8},(_,i)=>makeTrack(i));engine.graphs?.forEach(g=>g.dispose());engine.graphs=null;state.partGraphs.forEach(g=>g.dispose());state.partGraphs=[];
   $('source-name').textContent='音源が選択されていません';$('record-name').textContent='未録音';$('source-file').value='';setSourceTool('select');sourceWave.zoom=1;sourceWave.scroll=0;$('zoom').value=1;$('zoom-value').textContent='×1';$('wave-scroll').value=0;$('wave-scroll').max=0;$('wave-scroll').disabled=true;drawSource();drawParts();chopWave.set(null,state.rate);chopWave.points=[];$('chop-pads').replaceChildren();$('chop-info').textContent='サンプリング範囲を確定してください';renderTracks();refreshAvailability();
 }
-async function setSource(channels,name,{recorded=false,knownBpm=null}={}){
+async function setSource(channels,name,{recorded=false,knownBpm=null,file}={}){
   resetSource();const generation=state.generation;busy(true);status('音源のBPMを解析しています…');
   try {
-    state.original=stereo(channels).map(c=>c.slice());state.sourceName=name;$('source-name').textContent=name;hideAutosaveBanner();markSourceChanged();
+    state.original=stereo(channels).map(c=>c.slice());state.sourceName=name;state.sourceFile=file;$('source-name').textContent=name;hideAutosaveBanner();markSourceChanged();
     if(recorded){state.recorded=state.original.map(c=>c.slice());$('record-name').textContent=`${name} · 未保存`;}
     const detected=knownBpm?{bpm:knownBpm,confidence:1}:await job('detect',state.original);
     if(generation!==state.generation)return;
@@ -84,9 +84,18 @@ async function setSource(channels,name,{recorded=false,knownBpm=null}={}){
     await rebuildSource();
   } finally {if(generation===state.generation)busy(false);}
 }
+// Project reopening relies on decoding a file exactly as it was first loaded.
+async function decodeSource(buffer){
+  const decoded=await engine.context.decodeAudioData(buffer);
+  if(decoded.duration<.01)throw Error('音源が短すぎます（10 ms以上必要です）');if(decoded.duration>600)throw Error('音源は10分以内にしてください');
+  return [decoded.getChannelData(0).slice(),decoded.getChannelData(Math.min(1,decoded.numberOfChannels-1)).slice()];
+}
 async function loadFile(file,recorded=false){
   if(!file)return;await initAudio();busy(true);status('音源を読み込んでいます…');
-  try{const decoded=await engine.context.decodeAudioData(await file.arrayBuffer());if(decoded.duration<.01)throw Error('音源が短すぎます（10 ms以上必要です）');if(decoded.duration>600)throw Error('音源は10分以内にしてください');const channels=[decoded.getChannelData(0).slice(),decoded.getChannelData(Math.min(1,decoded.numberOfChannels-1)).slice()];await setSource(channels,file.name||'microphone.wav',{recorded});}
+  try{
+    const bytes=new Uint8Array(await file.arrayBuffer()),name=file.name||'microphone.wav',source={kind:recorded?'recording':'file',name,blob:file,bytes:bytes.length,crc:crc32(bytes)};
+    await setSource(await decodeSource(bytes.buffer),name,{recorded,file:source});
+  }
   catch(error){throw Error(`音源を読み込めませんでした。WAVまたはMP3を選択してください。${error.message}`);}finally{busy(false);}
 }
 async function rebuildSource(){
@@ -407,20 +416,25 @@ async function exportSequence(){
     status(clipped?`書き出しました。${CLIP_WARNING}`:'書き出しました · パターン1周分（再生と共通のループ境界）');
   }finally{busy(false);}
 }
-// Project files and autosave share one serialized form; buffers are rebuilt on load.
+// A project file holds settings only; the source song is chosen again on open.
+// Autosave keeps the source file itself in the browser, unconverted.
 const appVersion=typeof APP_VERSION==='string'?APP_VERSION:'dev';
-let autosaveAudioId=0,autosaveWrittenAudio=0,autosaveJson='',autosaveBusy=false,autosaveFailed=false,lastFileJson=null;
+let autosaveAudioId=0,autosaveWrittenAudio=0,autosaveJson='',autosaveBusy=false,autosaveFailed=false,lastFileJson=null,pendingProject=null;
 function markSourceChanged(){autosaveAudioId++;}
 function projectState(){
-  return {appVersion,sourceName:state.sourceName,rate:state.rate,frames:state.original[0].length,sourceBpm:state.sourceBpm,bpmNote:$('bpm-confidence').textContent,bpm:state.bpm,followsSource:tempoFollowsSource,range:state.range,committed:state.committed,points:state.points,count:state.count,snap:state.snap,sourceLoop:state.sourceLoop,loopBeats:loopBeatsOverride,lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,loop:state.loop,settings:state.settings,tracks:state.tracks,parts:state.parts,masterDb:engine.masterDb,exportChannels:Number($('export-channels').value),exportFormat:$('export-format').value};
+  const file=state.sourceFile;
+  return {appVersion,sourceKind:file.kind,sourceName:file.name,sourceBytes:file.bytes,sourceCrc:file.crc,rate:state.rate,frames:state.original[0].length,sourceBpm:state.sourceBpm,bpmNote:$('bpm-confidence').textContent,bpm:state.bpm,followsSource:tempoFollowsSource,range:state.range,committed:state.committed,points:state.points,count:state.count,snap:state.snap,sourceLoop:state.sourceLoop,loopBeats:loopBeatsOverride,lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,loop:state.loop,settings:state.settings,tracks:state.tracks,parts:state.parts,masterDb:engine.masterDb,exportChannels:Number($('export-channels').value),exportFormat:$('export-format').value};
 }
-function projectJson(){return state.original?JSON.stringify(serializeProject(projectState())):null;}
+function projectJson(){return state.original&&state.sourceFile?JSON.stringify(serializeProject(projectState())):null;}
 function updateDirty(json=projectJson()){$('project-dirty').textContent=json&&json!==lastFileJson?'未保存の変更あり':'';}
 function saveProject(){
-  if(!state.original||state.busy)return;
-  const name=projectFileName(state.sourceName,state.bpm);
-  download(packContainer(serializeProject(projectState(),new Date().toISOString()),encodeSource(state.original,state.rate)),name,'application/octet-stream');
-  lastFileJson=projectJson();updateDirty(lastFileJson);status(`プロジェクトを保存しました · ${name}`);
+  if(!state.original||!state.sourceFile||state.busy)return;
+  const name=projectFileName(state.sourceFile.name),file=state.sourceFile;
+  download(JSON.stringify(serializeProject(projectState(),new Date().toISOString()),null,2),name,'application/json');
+  // A recording exists only in this page, so its original bytes are saved beside the project.
+  if(file.kind==='recording')download(file.blob,file.name,file.blob.type);
+  lastFileJson=projectJson();updateDirty(lastFileJson);
+  status(file.kind==='recording'?`プロジェクトを保存しました · ${name} と録音 ${file.name}（2つを同じ場所に置いてください）`:`プロジェクトを保存しました · ${name}`);
 }
 function syncControlsFromState(project){
   $('global-bpm').value=state.bpm;$('source-bpm').value=state.sourceBpm;$('sequence-bpm').textContent=state.bpm;$('bpm-confidence').textContent=project.bpmNote;
@@ -433,32 +447,48 @@ function syncControlsFromState(project){
   document.querySelectorAll('[data-filter]').forEach(input=>{const filter=state.parts[Number(input.dataset.part)][input.dataset.filter];if(input.dataset.param==='on')input.checked=filter.on;else input.value=filter[input.dataset.param];});
   updatePatternLength();
 }
-async function restoreProject(project,channels){
-  await initAudio();resetSource();hideAutosaveBanner();busy(true);status('プロジェクトを読み込んでいます…');
+async function restoreProject(project,channels,sourceFile){
+  if(channels[0].length!==project.frames)throw Error('元の曲の長さがプロジェクトと一致しません');
+  await initAudio();resetSource();hideAutosaveBanner();hideSourcePrompt();busy(true);status('プロジェクトを読み込んでいます…');
   try{
-    state.original=channels;state.sourceName=project.sourceName;$('source-name').textContent=project.sourceName;markSourceChanged();
+    state.original=channels;state.sourceFile=sourceFile;state.sourceName=sourceFile.name;$('source-name').textContent=sourceFile.name;markSourceChanged();
     state.sourceBpm=project.sourceBpm;state.bpm=project.bpm;tempoFollowsSource=project.followsSource;loopBeatsOverride=project.loopBeats;
     Object.assign(state,{range:[...project.range],committed:project.committed&&[...project.committed],points:[...project.points],count:project.count,snap:project.snap,sourceLoop:project.sourceLoop,lengthTicks:project.lengthTicks,resolution:project.resolution,swing:project.swing,loop:project.loop,settings:{...project.settings},tracks:project.tracks});
     project.parts.forEach((part,i)=>{state.parts[i].hp={...part.hp};state.parts[i].lp={...part.lp};});
     engine.setMaster(project.masterDb);syncControlsFromState(project);
     // rebuildSource also rebuilds every chop because committed is already set.
     await rebuildSource();if(!state.committed)renderTracks();
-    status(`プロジェクトを読み込みました · ${project.sourceName} · ${state.bpm} BPM`);
+    status(`プロジェクトを読み込みました · ${sourceFile.name} · ${state.bpm} BPM`);
   }finally{busy(false);}
 }
-async function openProject(file){
-  if(!file)return;$('project-file').value='';
-  let loaded;try{loaded=readProjectFile(await file.arrayBuffer());}catch(error){throw Error(`プロジェクトを読み込めませんでした：${error.message}`);}
-  await restoreProject(loaded.project,loaded.channels);lastFileJson=projectJson();updateDirty(lastFileJson);
+// Decodes the chosen song after it matches the project, the same way it was first loaded.
+async function restoreWithSource(project,file){
+  if(project.sourceKind==='demo'){await initAudio();return restoreProject(project,demoChannels(state.rate),{kind:'demo',name:project.sourceName,blob:null,bytes:null,crc:null});}
+  const bytes=new Uint8Array(await file.arrayBuffer());checkSource(project,bytes);
+  await initAudio();const channels=await decodeSource(bytes.buffer);
+  await restoreProject(project,channels,{kind:project.sourceKind,name:file.name||project.sourceName,blob:file,bytes:project.sourceBytes,crc:project.sourceCrc});
+}
+function hideSourcePrompt(){pendingProject=null;$('project-source').classList.add('hidden');}
+async function openProject(files){
+  files=[...files];$('project-file').value='';if(!files.length)return;
+  const jsonFile=files.find(f=>/\.json$/i.test(f.name)||f.type==='application/json');
+  if(!jsonFile)throw Error('プロジェクトファイル（.json）を選んでください');
+  let project;try{project=parseProject(JSON.parse(await jsonFile.text()));}catch(error){throw Error(`プロジェクトを読み込めませんでした：${error.message}`);}
+  const audio=files.find(f=>f!==jsonFile);
+  if(project.sourceKind!=='demo'&&!audio){
+    pendingProject=project;$('project-source-text').textContent=`元の曲「${project.sourceName}」を選んでください`;$('project-source').classList.remove('hidden');
+    status(`プロジェクトを開くには、元の曲「${project.sourceName}」を選んでください`);return;
+  }
+  await restoreWithSource(project,audio);lastFileJson=projectJson();updateDirty(lastFileJson);
 }
 async function autosaveTick(){
   updateDirty();
-  if(!state.original||state.busy||autosaveBusy||autosaveFailed)return;
+  if(!state.original||!state.sourceFile||state.busy||autosaveBusy||autosaveFailed)return;
   autosaveBusy=true;
   try{
-    if(autosaveWrittenAudio!==autosaveAudioId){const id=autosaveAudioId;await autosave.put('audio',{id,blob:new Blob([encodeSource(state.original,state.rate)],{type:'audio/wav'})});autosaveWrittenAudio=id;autosaveJson='';}
+    if(autosaveWrittenAudio!==autosaveAudioId){const id=autosaveAudioId,{kind,name,blob,bytes,crc}=state.sourceFile;await autosave.put('audio',{id,kind,name,blob,bytes,crc});autosaveWrittenAudio=id;autosaveJson='';}
     const json=projectJson();
-    if(json&&autosaveWrittenAudio===autosaveAudioId&&json!==autosaveJson){await autosave.put('session',{audioId:autosaveWrittenAudio,savedAt:new Date().toISOString(),name:state.sourceName,json});autosaveJson=json;}
+    if(json&&autosaveWrittenAudio===autosaveAudioId&&json!==autosaveJson){await autosave.put('session',{audioId:autosaveWrittenAudio,savedAt:new Date().toISOString(),name:state.sourceFile.name,json});autosaveJson=json;}
   }catch(error){autosaveFailed=true;console.error(error);status('自動保存を停止しました（ブラウザの保存領域を利用できません）。「プロジェクトを保存」は引き続き使えます。',true);}
   finally{autosaveBusy=false;}
 }
@@ -479,16 +509,26 @@ async function discardAutosave(){
 }
 bind('autosave-restore','click',async()=>{
   const saved=await readAutosave();if(!saved){hideAutosaveBanner();throw Error('自動保存のデータが見つかりません');}
-  let loaded;try{loaded=readProject(JSON.parse(saved.session.json),new Uint8Array(await saved.audio.blob.arrayBuffer()));}catch(error){throw Error(`自動保存から復元できませんでした：${error.message}`);}
-  await restoreProject(loaded.project,loaded.channels);
+  const {kind,name,blob,bytes,crc}=saved.audio;
+  try{
+    const project=parseProject(JSON.parse(saved.session.json));
+    if(kind==='demo'){await restoreWithSource(project,null);}
+    else{await initAudio();await restoreProject(project,await decodeSource(await blob.arrayBuffer()),{kind,name,blob,bytes,crc});}
+  }catch(error){throw Error(`自動保存から復元できませんでした：${error.message}`);}
   // The stored audio is already this source; skip rewriting it.
   autosaveWrittenAudio=autosaveAudioId;autosaveJson=saved.session.json;updateDirty();
 });
 bind('autosave-discard','click',async()=>{await discardAutosave();status('自動保存を破棄しました');});
 bind('project-save','click',saveProject);
-// Open the picker synchronously so the click keeps its user activation.
+// Open pickers synchronously so the click keeps its user activation.
 $('project-open').addEventListener('click',()=>$('project-file').click());
-bind('project-file','change',event=>openProject(event.target.files[0]));
+$('project-source-pick').addEventListener('click',()=>$('project-source-file').click());
+bind('project-file','change',event=>openProject(event.target.files));
+bind('project-source-file','change',async event=>{
+  const file=event.target.files[0];$('project-source-file').value='';if(!file||!pendingProject)return;
+  await restoreWithSource(pendingProject,file);lastFileJson=projectJson();updateDirty(lastFileJson);
+});
+bind('project-source-cancel','click',()=>{hideSourcePrompt();status('プロジェクトを開くのをやめました');});
 document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='s'){event.preventDefault();guarded(saveProject)();}});
 
 bind('source-file','change',event=>loadFile(event.target.files[0]));
@@ -608,20 +648,25 @@ bind('record','click',async()=>{
     recordStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
     const mime=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus'].find(m=>MediaRecorder.isTypeSupported(m));recorder=new MediaRecorder(recordStream,mime?{mimeType:mime}:{});recordChunks=[];
     recorder.ondataavailable=event=>{if(event.data.size)recordChunks.push(event.data);};
-    recorder.onstop=()=>{recordStream.getTracks().forEach(t=>t.stop());state.recording=false;$('record').classList.remove('recording');refreshAvailability();guarded(async()=>{const blob=new Blob(recordChunks,{type:recorder.mimeType});await loadFile(new File([blob],'microphone-'+new Date().toISOString().replaceAll(':','-')+'.wav',{type:blob.type}),true);})()};
+    recorder.onstop=()=>{recordStream.getTracks().forEach(t=>t.stop());state.recording=false;$('record').classList.remove('recording');refreshAvailability();guarded(async()=>{const blob=new Blob(recordChunks,{type:recorder.mimeType}),ext=/mp4/.test(blob.type)?'m4a':/ogg/.test(blob.type)?'ogg':'webm';await loadFile(new File([blob],'microphone-'+new Date().toISOString().replaceAll(':','-')+'.'+ext,{type:blob.type}),true);})()};
     recorder.onerror=()=>{recordStream.getTracks().forEach(t=>t.stop());state.recording=false;refreshAvailability();status('マイク録音に失敗しました',true);};
     recorder.start(250);state.recording=true;$('record').classList.add('recording');refreshAvailability();status('マイク録音中…停止ボタンで確定します');
   }catch(error){recordStream?.getTracks().forEach(t=>t.stop());throw Error('マイクを開始できませんでした。ブラウザのマイク権限を確認してください。'+error.message);}
 });
 bind('record-stop','click',()=>{if(recorder?.state==='recording')recorder.stop();});
-bind('record-save','click',()=>{if(!state.recorded)return;const name=$('record-name').textContent.split(' · ')[0];download(encodeWav(state.recorded,state.rate),name,'audio/wav');$('record-name').textContent=name+' · 保存を要求しました';status('録音WAVのダウンロードを開始しました');});
-bind('demo','click',async()=>{
-  await initAudio();const rate=state.rate,length=rate*8,channels=[new Float32Array(length),new Float32Array(length)];
+bind('record-save','click',()=>{if(!state.recorded)return;const name=$('record-name').textContent.split(' · ')[0].replace(/\.[^.]+$/,'')+'.wav';download(encodeWav(state.recorded,state.rate),name,'audio/wav');$('record-name').textContent=name+' · 保存を要求しました';status('録音WAVのダウンロードを開始しました');});
+// Deterministic, so a demo project can be reopened without a source file.
+function demoChannels(rate){
+  const length=rate*8,channels=[new Float32Array(length),new Float32Array(length)];
   let seed=12345;const random=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296*2-1;};
   const chords=[[130.81,164.81,196,246.94],[146.83,174.61,220,261.63],[123.47,155.56,185,233.08],[130.81,164.81,196,246.94]];
   for(let i=0;i<length;i++){const t=i/rate,beat=t%.5,bar=Math.floor(t/2)%4,noise=random();const kick=Math.sin(2*Math.PI*(48*beat+5*(1-Math.exp(-35*beat))))*Math.exp(-beat*24)*.4;const hh=noise*Math.exp(-(t%.25)*140)*.055;const snare=Math.floor(t/.5)%2?noise*Math.exp(-beat*32)*.12:0;
     channels.forEach((c,ch)=>{let chord=0;for(const f of chords[bar])chord+=Math.sin(2*Math.PI*f*t+ch*.06)*.027;const bass=Math.sin(2*Math.PI*chords[bar][0]/2*t)*.10*Math.exp(-beat*3);c[i]=kick+hh+snare+bass+chord*(.75+.25*Math.sin(t*4));});}
-  await setSource(channels,'Future Funk Lab · Demo 120 BPM.wav',{knownBpm:120});
+  return channels;
+}
+bind('demo','click',async()=>{
+  await initAudio();const name='Future Funk Lab · Demo 120 BPM.wav';
+  await setSource(demoChannels(state.rate),name,{knownBpm:120,file:{kind:'demo',name,blob:null,bytes:null,crc:null}});
 });
 const masterResize=new ResizeObserver(()=>document.documentElement.style.setProperty('--master-height',`${$('master-strip').getBoundingClientRect().height}px`));masterResize.observe($('master-strip'));
 buildParts();renderGridControls();renderTracks();drawSource();drawParts();refreshAvailability();offerAutosave();setInterval(autosaveTick,2000);
