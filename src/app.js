@@ -1,5 +1,5 @@
 import './style.css';
-import { clamp, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, zipStore, crc32, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, gridSeconds, trackSpanTicks, syncedFrames, displaySteps, ticksPerStep, offbeatTicks, PATTERN_TICKS } from './core.js';
+import { clamp, aiffToWav, makeTrack, boundaries, quantizeBoundaries, snapBoundary, stereo, midChannels, monoChannels, sliceChannels, fadeEdges, encodeWav, zipStore, crc32, formatTime, formatDb, sliderDb, sourceBpmFromLoop, patternSeconds, gridSeconds, trackSpanTicks, syncedFrames, displaySteps, ticksPerStep, offbeatTicks, PATTERN_TICKS } from './core.js';
 import { AudioEngine, audioBuffer, makePartGraph, renderPattern, renderPart, activeTrack } from './audio.js';
 import { Waveform } from './waveform.js';
 import { serializeProject, parseProject, checkSource, projectFileName } from './project.js';
@@ -86,7 +86,8 @@ async function setSource(channels,name,{recorded=false,knownBpm=null,file}={}){
 }
 // Project reopening relies on decoding a file exactly as it was first loaded.
 async function decodeSource(buffer){
-  const decoded=await engine.context.decodeAudioData(buffer);
+  const wav=aiffToWav(new Uint8Array(buffer));let decoded;
+  try{decoded=await engine.context.decodeAudioData(wav?wav.buffer:buffer);}catch{throw Error('この形式は読み込めませんでした。WAV・AIFF・MP3・AAC(M4A)・FLAC・Opusのどれかで書き出し直してください');}
   if(decoded.duration<.01)throw Error('音源が短すぎます（10 ms以上必要です）');if(decoded.duration>600)throw Error('音源は10分以内にしてください');
   return [decoded.getChannelData(0).slice(),decoded.getChannelData(Math.min(1,decoded.numberOfChannels-1)).slice()];
 }
@@ -96,7 +97,7 @@ async function loadFile(file,recorded=false){
     const bytes=new Uint8Array(await file.arrayBuffer()),name=file.name||'microphone.wav',source={kind:recorded?'recording':'file',name,blob:file,bytes:bytes.length,crc:crc32(bytes)};
     await setSource(await decodeSource(bytes.buffer),name,{recorded,file:source});
   }
-  catch(error){throw Error(`音源を読み込めませんでした。WAVまたはMP3を選択してください。${error.message}`);}finally{busy(false);}
+  catch(error){throw Error(`音源を読み込めませんでした。${error.message}`);}finally{busy(false);}
 }
 async function rebuildSource(){
   if(!state.original)return;clearTimeout(boundaryTimer);const generation=++state.generation;busy(true);stopSequence();status('BPMを変換しています…');
