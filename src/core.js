@@ -95,6 +95,33 @@ export function encodeWav(channels,rate) {
   for(let i=0;i<length;i++)for(let c=0;c<count;c++){let x=clamp(channels[c][i]||0,-1,1);v.setInt16(offset,Math.round(x*(x<0?32768:32767)),true);offset+=2;}
   return data;
 }
+// Chrome cannot decode AIFF. Rewrites its PCM as a WAV with the same depth and rate, without
+// converting values, so decodeAudioData resamples it the same way as a WAV. Null if not AIFF.
+const AIFF_CODECS={NONE:'swap',twos:'swap',sowt:'copy',fl32:'float',FL32:'float',raw:'copy'};
+export function aiffToWav(bytes){
+  const text=(at,n=4)=>String.fromCharCode(...bytes.subarray(at,at+n));
+  if(bytes.length<12||text(0)!=='FORM'||!['AIFF','AIFC'].includes(text(8)))return null;
+  const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);let comm=null,ssnd=null;
+  for(let at=12;at+8<=bytes.length;){const id=text(at),size=v.getUint32(at+4);if(id==='COMM')comm={at:at+8,size};if(id==='SSND')ssnd={at:at+8,size};at+=8+size+(size&1);}
+  if(!comm||!ssnd||comm.size<18)throw Error('AIFFのヘッダーが壊れています');
+  const channels=v.getUint16(comm.at),frames=v.getUint32(comm.at+2),bits=v.getUint16(comm.at+6),exponent=v.getUint16(comm.at+8)&0x7fff;
+  const rate=Math.round((v.getUint32(comm.at+10)*2**32+v.getUint32(comm.at+14))*2**(exponent-16383-63));
+  const codec=text(8)==='AIFC'&&comm.size>=22?text(comm.at+18):'NONE',mode=AIFF_CODECS[codec];
+  if(!mode)throw Error(`このAIFFの圧縮形式（${codec.trim()}）には対応していません`);
+  // Samples below a byte boundary are stored left-justified, so whole bytes keep their scale.
+  const width=Math.ceil(bits/8),float=mode==='float';
+  if(!channels||!rate||!width||width>4||float&&bits!==32||mode==='copy'&&codec==='raw'&&width!==1)throw Error('AIFFのヘッダーが壊れています');
+  const start=ssnd.at+8+v.getUint32(ssnd.at),length=frames*channels*width;
+  if(start+length>bytes.length)throw Error('AIFFの音声データが途中で切れています');
+  const out=new Uint8Array(44+length),w=new DataView(out.buffer),pcm=bytes.subarray(start,start+length);
+  const put=(at,s)=>[...s].forEach((c,i)=>out[at+i]=c.charCodeAt(0));
+  put(0,'RIFF');w.setUint32(4,36+length,true);put(8,'WAVE');put(12,'fmt ');w.setUint32(16,16,true);w.setUint16(20,float?3:1,true);w.setUint16(22,channels,true);
+  w.setUint32(24,rate,true);w.setUint32(28,rate*channels*width,true);w.setUint16(32,channels*width,true);w.setUint16(34,width*8,true);put(36,'data');w.setUint32(40,length,true);
+  if(mode==='copy'&&width>1||codec==='raw')out.set(pcm,44);
+  else if(width===1)for(let i=0;i<length;i++)out[44+i]=pcm[i]^0x80; // AIFF 8-bit is signed, WAV 8-bit unsigned.
+  else for(let i=0;i<length;i+=width)for(let b=0;b<width;b++)out[44+i+b]=pcm[i+width-1-b];
+  return out;
+}
 const CRC_TABLE=Array.from({length:256},(_,n)=>{let c=n;for(let k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;return c>>>0;});
 export function crc32(bytes){let c=0xffffffff;for(const b of bytes)c=CRC_TABLE[(c^b)&255]^(c>>>8);return (c^0xffffffff)>>>0;}
 // Uncompressed (STORE) ZIP. Audio barely compresses, and this avoids a dependency.

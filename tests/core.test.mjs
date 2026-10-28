@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { boundaries, snapBoundary, encodeWav, gridSeconds, patternSeconds, midChannels, detectBpm, triggerFrames, offbeatTicks, makeTrack } from '../src/core.js';
 import { transform, encodeMp3 } from '../src/dsp.js';
+import { makeAiff } from './aiff.mjs';
 const rate=44100;
 const tone=(seconds=1,freq=440)=>Float32Array.from({length:Math.round(seconds*rate)},(_,i)=>.5*Math.sin(2*Math.PI*freq*i/rate));
 function frequency(data){let crossings=0;const a=Math.floor(data.length*.25),b=Math.floor(data.length*.75);for(let i=a+1;i<b;i++)if(data[i-1]<=0&&data[i]>0)crossings++;return crossings*rate/(b-a);}
@@ -85,4 +86,19 @@ test('ZIP（無圧縮）は既知のCRC32と、ローカルヘッダ・中央デ
   const directory=v.getUint32(end+16,true);assert.equal(v.getUint32(directory,true),0x02014b50);assert.equal(v.getUint32(directory+42,true),0);
   const second=directory+46+11;assert.equal(v.getUint32(second,true),0x02014b50);assert.equal(v.getUint32(second+42,true),46);assert.equal(v.getUint32(second+16,true),crc32(b));
   assert.equal(v.getUint16(10,true),(12<<11)|(34<<5)|28);assert.equal(v.getUint16(12,true),((2026-1980)<<9)|(10<<5)|28);
+});
+
+test('AIFFは値を変えずに同じビット深度・レートのWAVへ組み替える',async()=>{
+  const {aiffToWav}=await import('../src/core.js');
+  const be=Uint8Array.from({length:48},(_,i)=>(i*37+11)&255),swap=w=>{const out=new Uint8Array(be.length);for(let i=0;i<be.length;i+=w)for(let b=0;b<w;b++)out[i+b]=be[i+w-1-b];return out;};
+  const header=wav=>{const v=new DataView(wav.buffer);return {tag:v.getUint16(20,true),channels:v.getUint16(22,true),rate:v.getUint32(24,true),bits:v.getUint16(34,true),size:v.getUint32(40,true)};};
+  for(const [options,tag,pcm] of [[{bits:16},1,swap(2)],[{bits:24,rate:48000},1,swap(3)],[{bits:16,codec:'sowt'},1,be],[{bits:32,codec:'fl32',rate:96000},3,swap(4)],[{bits:16,codec:'NONE',channels:1},1,swap(2)]]){
+    const wav=aiffToWav(makeAiff({...options,data:be})),h=header(wav);
+    assert.deepEqual(h,{tag,channels:options.channels||2,rate:options.rate||44100,bits:options.bits,size:be.length});
+    assert.deepEqual(wav.subarray(44),pcm);
+  }
+  const eight=aiffToWav(makeAiff({bits:8,channels:1,data:Uint8Array.of(0,127,128,255)}));assert.deepEqual([...eight.subarray(44)],[128,255,0,127]);
+  assert.equal(aiffToWav(new Uint8Array(encodeWav([new Float32Array(4)],rate))),null);
+  assert.throws(()=>aiffToWav(makeAiff({bits:16,codec:'ima4',data:be})),/圧縮形式（ima4）/);
+  assert.throws(()=>aiffToWav(makeAiff({bits:16,data:be}).subarray(0,60)),/途中で切れています/);
 });
