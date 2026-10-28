@@ -548,6 +548,17 @@ bind('project-source-file','change',async event=>{
 });
 bind('project-source-cancel','click',()=>{hideSourcePrompt();status('プロジェクトを開くのをやめました');});
 document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='s'){event.preventDefault();guarded(saveProject)();}});
+// Space plays and stops from anywhere but text fields and menus. On a focused button it does
+// not press the button (Enter still does), so toggling a step and then Space never retoggles it.
+const typesText=element=>element.isContentEditable||['SELECT','TEXTAREA'].includes(element.tagName)||element.tagName==='INPUT'&&element.type!=='range';
+const transportSpace=event=>event.code==='Space'&&!event.metaKey&&!event.ctrlKey&&!event.altKey&&!typesText(event.target);
+document.addEventListener('keydown',event=>{
+  // The source waveform handles Space itself, as it did before.
+  if(!transportSpace(event)||event.defaultPrevented)return;
+  event.preventDefault();if(event.repeat)return;
+  if(state.committed)guarded(startSequence)();else if(state.channels)guarded(toggleSource)();
+});
+document.addEventListener('keyup',event=>{if(transportSpace(event))event.preventDefault();});
 
 async function chooseSource(file){if(file&&await confirmReplace())await loadFile(file);}
 bind('source-file','change',async event=>{const file=event.target.files[0];$('source-file').value='';await chooseSource(file);});
