@@ -34,7 +34,7 @@ test('波形・境界の操作、範囲の再選択、分割数とステップ�
   await page.locator('#source-delete').click();await expect(page.locator('#sample')).toBeDisabled();await expect(page.locator('#seq-play')).toBeDisabled();expect((await state(page)).committed).toBeNull();
 });
 test('音声分離フィルターとシーク、パート書き出し',async({page})=>{
-  await demo(page);await page.locator('[data-part-play="0"]').click();await expect(page.locator('[data-part-play="0"]')).toHaveClass(/active/);
+  await demo(page);await page.locator('#tab-separation').click();await page.locator('[data-part-play="0"]').click();await expect(page.locator('[data-part-play="0"]')).toHaveClass(/active/);
   await page.locator('[data-part="0"][data-filter="hp"][data-param="freq"][type="number"]').fill('500');await page.locator('[data-part="0"][data-filter="hp"][data-param="freq"][type="number"]').press('Tab');await expect(page.locator('[data-part="0"][data-filter="hp"][type="range"]')).toHaveValue('500');
   await page.locator('[data-part="0"][data-filter="hp"][data-param="slope"]').selectOption('6');await page.locator('#part-seek-0').fill('0.5');await page.locator('#part-seek-0').dispatchEvent('input');await expect(page.locator('#part-time-0')).toContainText('0:04.');
   await page.locator('[data-part-stop="0"]').click();const promise=page.waitForEvent('download');await page.locator('[data-part-export="0"]').click();const output=await wav(await promise);expect(output.frames/output.rate).toBe(8);expect(output.data.subarray(44).some(x=>x!==0)).toBe(true);
@@ -65,7 +65,7 @@ test('画面の表示と狭い画面での操作領域を確認',async({page})=>
 });
 
 test('音声分離の周波数範囲はHPF 50〜2000Hz・LPF 200〜8000Hzで、入力とスライダーが連動する',async({page})=>{
-  await demo(page);
+  await demo(page);await page.locator('#tab-separation').click();
   for(const part of [0,1])for(const [filter,min,max] of [['hp',50,2000],['lp',200,8000]]){
     const number=page.locator(`[data-part="${part}"][data-filter="${filter}"][data-param="freq"][type="number"]`);
     const slider=page.locator(`[data-part="${part}"][data-filter="${filter}"][data-param="freq"][type="range"]`);
