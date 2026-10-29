@@ -297,6 +297,17 @@ function setTrackView(view){
   trackView=view;try{localStorage.setItem('ffl:view',view);}catch{}
   renderTracks();
 }
+// The separation and chop-to-sequencer work only switch what is shown; playback keeps going.
+let sectionTab='chop';
+try{if(localStorage.getItem('ffl:tab')==='separation')sectionTab='separation';}catch{}
+function setSectionTab(tab,{focus=false}={}){
+  sectionTab=tab;try{localStorage.setItem('ffl:tab',tab);}catch{}
+  for(const name of ['chop','separation']){const selected=name===tab,button=$(`tab-${name}`);button.setAttribute('aria-selected',selected);button.tabIndex=selected?0:-1;$(`panel-${name}`).classList.toggle('hidden',!selected);}
+  if(focus)$(`tab-${tab}`).focus();
+}
+for(const name of ['chop','separation'])$(`tab-${name}`).addEventListener('click',()=>setSectionTab(name));
+$('tab-chop').parentElement.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();setSectionTab(sectionTab==='chop'?'separation':'chop',{focus:true});});
+setSectionTab(sectionTab);
 bind('view-compact','click',()=>setTrackView('compact'));
 bind('view-detail','click',()=>setTrackView('detail'));
 // Track controls are rendered in two places, so events are delegated from the section.
@@ -806,4 +817,4 @@ function animate(time){
 }requestAnimationFrame(animate);
 window.addEventListener('pagehide',()=>{recordStream?.getTracks().forEach(t=>t.stop());engine.stopAll();worker.terminate();});
 // Read-only diagnostics for integration checks; no audio data leaves this page.
-window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:steps(),lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks),view:trackView,selectedTrack:state.selectedTrack,history:{undo:Math.max(0,historyIndex),redo:Math.max(0,undoStack.length-1-historyIndex)}}),engine};
+window.futureFunkLab={getState:()=>({chopPlayback:getChopPlayback(),tempoFollowsSource,sourcePlayhead:engine.preview.has('source')?sourceVoicePosition(engine.preview.get('source')):sourcePlayhead,sourcePlaybackMode:engine.preview.get('source')?.sourceMode??null,sourceTool:sourceWave.tool,sourceZoom:sourceWave.zoom,sourceScroll:sourceWave.scroll,bpm:state.bpm,sourceBpm:state.sourceBpm,duration:duration(),count:state.count,steps:steps(),lengthTicks:state.lengthTicks,resolution:state.resolution,swing:state.swing,points:[...state.points],range:[...state.range],committed:state.committed?[...state.committed]:null,bufferDurations:state.buffers.map(b=>b.duration),syncSpans:state.buffers.map(b=>b.syncSpan),previewDurations:state.buffers.map(b=>b.chopPreview?.duration),pendingTracks:[...pendingPitch.keys()],busy:state.busy,playing:engine.playing,tracks:structuredClone(state.tracks),view:trackView,tab:sectionTab,selectedTrack:state.selectedTrack,history:{undo:Math.max(0,historyIndex),redo:Math.max(0,undoStack.length-1-historyIndex)}}),engine};

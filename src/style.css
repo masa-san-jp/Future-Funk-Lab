@@ -18,6 +18,7 @@
 @media(max-width:900px){header{flex-wrap:wrap}.header-tools{width:100%;justify-content:space-between;gap:12px}.project-tools{flex-wrap:wrap}.dirty{min-width:0}}
 
 .step-buttons button small{display:block;font-size:9px;opacity:.75;line-height:1}.grid-confirm{margin:0 20px 10px;padding:10px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border:1px solid var(--pink);border-radius:6px;font-size:12px}.grid-confirm span{flex:1;min-width:220px}
+.section-tabs{display:flex;gap:4px;margin:0 0 -1px;padding:0 4px}.section-tabs button{border-radius:7px 7px 0 0;border-bottom-color:var(--line);background:#171b24;color:var(--muted);min-height:36px;padding:7px 18px}.section-tabs button[aria-selected=true]{background:var(--panel);color:var(--text);border-color:var(--line);border-bottom-color:var(--panel);position:relative;z-index:1}
 .view-toggle{display:inline-flex;gap:4px;align-items:center;font-size:11px}.view-toggle span{margin-right:4px}.view-toggle button{min-height:26px;font-size:11px;padding:3px 9px}
 .compact-only{display:none}.sequencer.compact .compact-only{display:inline}.sequencer.compact .detail-only{display:none}
 .track-editor{margin:0 20px 12px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--pink);border-radius:6px;background:#151923}.track-editor-head{font-size:12px;color:var(--mint);margin-bottom:8px;font-family:ui-monospace,SFMono-Regular,monospace}.track-editor .edit-line{flex-wrap:wrap}
